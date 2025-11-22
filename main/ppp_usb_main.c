@@ -12,6 +12,28 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 
+// OLED Display
+#include "u8g2.h"
+#include "u8g2_esp32_hal.h"   // from u8g2-hal-esp-idf component
+
+
+/* Pins */
+#define OLED_SDA GPIO_NUM_5
+#define OLED_SCL GPIO_NUM_6
+#define OLED_RST U8G2_ESP32_HAL_UNDEFINED  // no reset pin on your board
+
+/* Display + workaround window */
+static const int width   = 72;
+static const int height  = 40;
+static const int xOffset = 28;
+static const int yOffset = 18;
+
+/* I2C address (7-bit 0x3C; u8g2 wants 8-bit shifted) */
+static const uint8_t I2C_ADDR_8BIT = (0x3C << 1);
+
+static u8g2_t u8g2;
+
+
 #include "lwip/err.h"
 #include "lwip/sys.h"
 #include "lwip/netif.h"
@@ -192,6 +214,37 @@ static void ppp_status_cb(ppp_pcb *pcb, int err_code, void *ctx)
             break;
     }
 }
+
+// ======================================================
+//                 OLED
+// ======================================================
+
+static void handle_oled(int c)
+{
+    char buffer[32];
+
+    u8g2_ClearBuffer(&u8g2);
+    u8g2_SetFont(&u8g2, u8g2_font_4x6_tr);
+
+    u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 10, "Display is working!");
+    u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 20, "Have fun with it");
+
+    snprintf(buffer, sizeof(buffer), "Uptime: %ds", c);
+    u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 30, buffer);
+
+    u8g2_SendBuffer(&u8g2);
+}
+
+static void oled_task(void *arg)
+{
+    int c = 0;
+    while (1) {
+        handle_oled(c++);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+
 
 // ======================================================
 //                 WiFi SoftAP
@@ -797,6 +850,35 @@ void app_main(void)
 
             ESP_LOGI(TAG, "PPP connected -> starting MQTT broker");
             start_mqtt_broker_deferred();
+
+            /* --- u8g2 HAL init (I2C) --- */
+            u8g2_esp32_hal_t hal = U8G2_ESP32_HAL_DEFAULT;
+            hal.bus.i2c.sda = OLED_SDA;
+            hal.bus.i2c.scl = OLED_SCL;
+            hal.reset = U8G2_ESP32_HAL_UNDEFINED;  // no reset pin on abrobot-oled
+            hal.dc    = U8G2_ESP32_HAL_UNDEFINED;  // not used for I2C
+
+            u8g2_esp32_hal_init(hal);
+
+            /* --- Setup SSD1306 128x64 buffer (we draw only in 72x40 window) --- */
+            u8g2_Setup_ssd1306_i2c_128x64_noname_f(
+                &u8g2,
+                U8G2_R0,
+                u8g2_esp32_i2c_byte_cb,
+                u8g2_esp32_gpio_and_delay_cb
+            );
+
+            /* Set I2C address explicitly */
+            u8g2_SetI2CAddress(&u8g2, I2C_ADDR_8BIT);
+
+            u8g2_InitDisplay(&u8g2);
+            u8g2_SetPowerSave(&u8g2, 0);     // wake the panel
+            u8g2_SetContrast(&u8g2, 255);    // max contrast
+
+            ESP_LOGI(TAG, "abrobot-oled init OK. Active window %dx%d @ offset (%d,%d)",
+                     width, height, xOffset, yOffset);
+
+            xTaskCreate(oled_task, "oled_task", 4096, NULL, 5, NULL);
         }
 
         if (bits & PPP_DISCONN_BIT) {
