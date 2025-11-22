@@ -1,3 +1,6 @@
+# This is for a esp32-C3
+CONFIG_IDF_TARGET="esp32c3"
+
 # Use USB Serial/JTAG for flashing, but NOT for console output
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=n
 CONFIG_ESP_CONSOLE_UART=y
