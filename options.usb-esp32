@@ -1,0 +1,20 @@
+115200
+local
+noauth
+crtscts
+debug
+# Hand out a LAN IP to the peer (Wemos):
+192.168.178.60:192.168.178.50
+persist
+holdoff 5
+maxfail 0
+mtu 512
+mru 512
+# optional: avoid compression/asyncmap surprises
+noccp
+nobsdcomp
+nodeflate
+nopcomp
+novj
+noipv6
+
