@@ -1,0 +1,67 @@
+# === ESP-IDF build output ===
+build/
+build_*/
+**/build/
+**/build_*/
+
+# Ninja / CMake / Make temporary files
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+*.ninja
+*.ninja_deps
+*.ninja_log
+rules.ninja
+compile_commands.json
+
+# === ESP-IDF generated binaries & reports ===
+*.bin
+*.elf
+*.map
+*.hex
+*.uf2
+flasher_args.json
+flash_args
+partition_table/*.bin
+bootloader/*.bin
+app_info_*.txt
+size_info*.txt
+build_summary_*.xml
+XUNIT_RESULT*.xml
+coverage.info
+coverage_report/
+TEST_LOGS/
+
+# === SDK config files ===
+sdkconfig
+sdkconfig.old
+sdkconfig.*.old
+
+# If you use defaults, keep these tracked:
+!sdkconfig.defaults
+!sdkconfig.defaults.*
+
+# === Managed components (IDF component manager) ===
+managed_components/
+dependencies.lock
+
+# === IDE/editor files ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# === Python caches (IDF tools, scripts) ===
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.cache/
+
+# === OS junk ===
+.DS_Store
+Thumbs.db
+*~
+
