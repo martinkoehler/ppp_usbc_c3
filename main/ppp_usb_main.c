@@ -219,17 +219,26 @@ static void ppp_status_cb(ppp_pcb *pcb, int err_code, void *ctx)
 //                 OLED
 // ======================================================
 
-static void handle_oled(int c)
+static void handle_oled(void)
 {
-    char buffer[32];
+    // last OBK power value
+    char power_copy[30];
+    strlcpy(power_copy, "N/A", sizeof(power_copy));
+
+    if (g_obk_mutex && xSemaphoreTake(g_obk_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+        strlcpy(power_copy, g_obk_power, sizeof(power_copy));
+        xSemaphoreGive(g_obk_mutex);
+    }
+
 
     u8g2_ClearBuffer(&u8g2);
     u8g2_SetFont(&u8g2, u8g2_font_4x6_tr);
 
-    u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 10, "Display is working!");
-    u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 20, "Have fun with it");
+    u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 10, "Solar power");
+    //u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 20, "Have fun with it");
 
-    snprintf(buffer, sizeof(buffer), "Uptime: %ds", c);
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "%s W", power_copy);
     u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 30, buffer);
 
     u8g2_SendBuffer(&u8g2);
@@ -237,9 +246,8 @@ static void handle_oled(int c)
 
 static void oled_task(void *arg)
 {
-    int c = 0;
     while (1) {
-        handle_oled(c++);
+        handle_oled();
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
