@@ -43,6 +43,15 @@ static bool s_broker_running = false;
 
 static const char *TAG = "ppp_usb_ap_web";
 
+
+// -------- Web refresh --------
+#define PAGE_REFRESH_SEC 3   // NEW: auto refresh interval
+
+// -------- OBK power value from MQTT --------
+#define OBK_POWER_TOPIC "obk_wr/power/get"  // NEW
+static char g_obk_power[64] = "N/A";        // NEW: last payload as string
+static SemaphoreHandle_t g_obk_mutex = NULL; // NEW: protects g_obk_power
+
 // --------- DEFAULT CONFIG (used if NVS empty) ----------
 #define DEFAULT_AP_SSID     "ESP32C3-PPP-AP"
 #define DEFAULT_AP_PASS     "12345678"
@@ -171,7 +180,7 @@ static void ppp_status_cb(ppp_pcb *pcb, int err_code, void *ctx)
             ESP_LOGI(TAG, "PPP GW: " IPSTR, IP2STR(&gw));
             ESP_LOGI(TAG, "PPP NM: " IPSTR, IP2STR(&nm));
 
-	    ESP_LOGI(TAG, "PPP connected -> restarting webserver to bind on all netifs");
+            ESP_LOGI(TAG, "PPP connected -> restarting webserver to bind on all netifs");
 
             xEventGroupSetBits(s_event_group, PPP_CONNECTED_BIT);
             break;
@@ -342,6 +351,20 @@ static void append_mqtt_panel(char *out, size_t out_len)
              (unsigned long)esp_get_free_heap_size());
     strlcat(out, line, out_len);
 
+    // show last OBK power value
+    char power_copy[64];
+    strlcpy(power_copy, "N/A", sizeof(power_copy));
+
+    if (g_obk_mutex && xSemaphoreTake(g_obk_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+        strlcpy(power_copy, g_obk_power, sizeof(power_copy));
+        xSemaphoreGive(g_obk_mutex);
+    }
+
+    snprintf(line, sizeof(line),
+             "<p><b>Latest %s:</b> <code>%s</code></p>",
+             OBK_POWER_TOPIC, power_copy);
+    strlcat(out, line, out_len);
+
     // Connection hints
     strlcat(out, "<p><b>Connect from WiFi AP clients:</b><br>", out_len);
     snprintf(line, sizeof(line),
@@ -391,6 +414,57 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         "<title>ESP32C3 PPP Router</title>"
+        // NEW: JS auto-refresh + UI hint
+        "<script>"
+        "(function(){"
+        "  var periodSec = %d;"
+        "  var periodMs  = periodSec * 1000;"
+        "  var lastReload = new Date().getTime();"
+        ""
+        "  function badgeEl(){"
+        "    return document.getElementById('refreshBadge');"
+        "  }"
+        ""
+        "  function userIsEditing(){"
+        "    var ae = document.activeElement;"
+        "    if(!ae) return false;"
+        "    var tag = ae.tagName;"
+        "    return (tag === 'INPUT' || tag === 'TEXTAREA');"
+        "  }"
+        ""
+        "  function setBadge(text, bg){"
+        "    var b = badgeEl();"
+        "    if(!b) return;"
+        "    b.textContent = text;"
+        "    if(bg) b.style.background = bg;"
+        "  }"
+        ""
+        "  function updateBadge(){"
+        "    if(document.hidden){"
+        "      setBadge('Auto-refresh: Paused (tab hidden)', '#f5e6a7');"
+        "    } else if(userIsEditing()){"
+        "      setBadge('Auto-refresh: Paused while editing', '#f5c6c6');"
+        "    } else {"
+        "      setBadge('Auto-refresh: ON (' + periodSec + 's)', '#d5f5d5');"
+        "    }"
+        "  }"
+        ""
+        "  document.addEventListener('visibilitychange', updateBadge);"
+        "  document.addEventListener('focusin', updateBadge);"
+        "  document.addEventListener('focusout', updateBadge);"
+        "  updateBadge();"
+        ""
+        "  setInterval(function(){"
+        "    updateBadge();"
+        "    if(document.hidden) return;"
+        "    if(userIsEditing()) return;"
+        "    var now = new Date().getTime();"
+        "    if(now - lastReload < periodMs - 50) return;"
+        "    lastReload = now;"
+        "    window.location.reload();"
+        "  }, periodMs);"
+        "})();"
+        "</script>"
         "<style>"
         "body{font-family:sans-serif;margin:20px;}"
         "table{border-collapse:collapse;}"
@@ -399,7 +473,14 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "</style>"
         "</head><body>"
         "<h2>ESP32-C3 PPP-over-USB + SoftAP Router (no NAT)</h2>"
-
+        // small status badge placeholder
+        "<div id='refreshBadge' "
+        "     style='position:fixed;top:10px;right:10px;"
+        "            background:#eee;border:1px solid #ccc;"
+        "            padding:6px 10px;border-radius:8px;"
+        "            font-size:12px;opacity:0.9;z-index:9999;'>"
+        "Auto-refresh: …"
+        "</div>"
         "<h3>Access Point</h3>"
         "<p><b>SSID:</b> %s<br>"
         "<b>Password:</b> %s</p>"
@@ -420,6 +501,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<input type='submit' value='Save & Restart AP'>"
         "</form>"
         "<hr>",
+        PAGE_REFRESH_SEC,          // for %d inside JS
         g_ap_ssid, g_ap_pass,
         IP2STR(&ap_info.ip), IP2STR(&ap_info.netmask),
         IP2STR(&ppp_ip), IP2STR(&ppp_gw), IP2STR(&ppp_nm),
@@ -573,13 +655,33 @@ static void restart_webserver(void)
 //                  MQTT Broker
 // ======================================================
 
+// called by mosquitto broker whenever it processes a message
+static void broker_message_cb(char *client, char *topic,
+                              char *data, int len, int qos, int retain)
+{
+    (void)client; (void)qos; (void)retain;
+
+    if (!topic || !data || len <= 0) return;
+
+    if (strcmp(topic, OBK_POWER_TOPIC) == 0) {
+        if (g_obk_mutex && xSemaphoreTake(g_obk_mutex, 0) == pdTRUE) {
+            int n = len;
+            if (n >= (int)sizeof(g_obk_power)) n = sizeof(g_obk_power) - 1;
+            memcpy(g_obk_power, data, n);
+            g_obk_power[n] = 0;  // ensure NUL terminated
+            xSemaphoreGive(g_obk_mutex);
+        }
+    }
+}
+
+
 static void mqtt_broker_task(void *arg)
 {
     struct mosq_broker_config cfg = {
         .host = "0.0.0.0",          // listen on all IPv4 interfaces (AP + PPP)
         .port = MQTT_BROKER_PORT,
         .tls_cfg = NULL,            // plain TCP for now
-        .handle_message_cb = NULL   // optional: hook messages if you want
+        .handle_message_cb = broker_message_cb   //hook callback
     };
 
     ESP_LOGI(TAG, "Mosquitto broker starting on port %d (host=%s)...",
@@ -632,6 +734,9 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     s_event_group = xEventGroupCreate();
+
+    g_obk_mutex = xSemaphoreCreateMutex();  // NEW
+    assert(g_obk_mutex);
 
     // Load AP config from flash
     load_ap_config_from_nvs();
@@ -686,11 +791,11 @@ void app_main(void)
 
         if (bits & PPP_CONNECTED_BIT) {
             ESP_LOGI(TAG, "PPP link up; routing between AP <-> PPP active.");
-	    // safe here (app task), not tcpip thread
+            // safe here (app task), not tcpip thread
             ESP_LOGI(TAG, "Restarting webserver now that PPP is up");
             restart_webserver();
 
-	    ESP_LOGI(TAG, "PPP connected -> starting MQTT broker");
+            ESP_LOGI(TAG, "PPP connected -> starting MQTT broker");
             start_mqtt_broker_deferred();
         }
 
