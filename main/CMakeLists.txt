@@ -1,5 +1,8 @@
+file(GLOB_RECURSE SOURCES *.c)
 idf_component_register(
-    SRCS "ppp_usb_main.c"
-    INCLUDE_DIRS "."
+	SRCS 
+	    ${SOURCES}
+        INCLUDE_DIRS 
+	    "include"
+	    "."
 )
-
