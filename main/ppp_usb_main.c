@@ -202,8 +202,6 @@ static void ppp_status_cb(ppp_pcb *pcb, int err_code, void *ctx)
             ESP_LOGI(TAG, "PPP GW: " IPSTR, IP2STR(&gw));
             ESP_LOGI(TAG, "PPP NM: " IPSTR, IP2STR(&nm));
 
-            ESP_LOGI(TAG, "PPP connected -> restarting webserver to bind on all netifs");
-
             xEventGroupSetBits(s_event_group, PPP_CONNECTED_BIT);
             break;
         }
@@ -253,6 +251,36 @@ static void oled_task(void *arg)
 }
 
 
+static void start_oled(void)
+{           /* --- u8g2 HAL init (I2C) --- */
+            u8g2_esp32_hal_t hal = U8G2_ESP32_HAL_DEFAULT;
+            hal.bus.i2c.sda = OLED_SDA;
+            hal.bus.i2c.scl = OLED_SCL;
+            hal.reset = U8G2_ESP32_HAL_UNDEFINED;  // no reset pin on abrobot-oled
+            hal.dc    = U8G2_ESP32_HAL_UNDEFINED;  // not used for I2C
+
+            u8g2_esp32_hal_init(hal);
+
+            /* --- Setup SSD1306 128x64 buffer (we draw only in 72x40 window) --- */
+            u8g2_Setup_ssd1306_i2c_128x64_noname_f(
+                &u8g2,
+                U8G2_R0,
+                u8g2_esp32_i2c_byte_cb,
+                u8g2_esp32_gpio_and_delay_cb
+            );
+
+            /* Set I2C address explicitly */
+            u8g2_SetI2CAddress(&u8g2, I2C_ADDR_8BIT);
+
+            u8g2_InitDisplay(&u8g2);
+            u8g2_SetPowerSave(&u8g2, 0);     // wake the panel
+            u8g2_SetContrast(&u8g2, 255);    // max contrast
+
+            ESP_LOGI(TAG, "abrobot-oled init OK. Active window %dx%d @ offset (%d,%d)",
+                     width, height, xOffset, yOffset);
+
+            xTaskCreate(oled_task, "oled_task", 4096, NULL, 5, NULL);
+}
 
 // ======================================================
 //                 WiFi SoftAP
@@ -542,12 +570,6 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "            font-size:12px;opacity:0.9;z-index:9999;'>"
         "Auto-refresh: …"
         "</div>"
-        "<h3>Access Point</h3>"
-        "<p><b>SSID:</b> %s<br>"
-        "<b>Password:</b> %s</p>"
-        "<p><b>AP IP:</b> " IPSTR "<br>"
-        "<b>AP Netmask:</b> " IPSTR "</p>"
-
         "<h3>PPP Link</h3>"
         "<p><b>PPP IP:</b> " IPSTR "<br>"
         "<b>PPP GW:</b> " IPSTR "<br>"
@@ -563,8 +585,6 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "</form>"
         "<hr>",
         PAGE_REFRESH_SEC,          // for %d inside JS
-        g_ap_ssid, g_ap_pass,
-        IP2STR(&ap_info.ip), IP2STR(&ap_info.netmask),
         IP2STR(&ppp_ip), IP2STR(&ppp_gw), IP2STR(&ppp_nm),
         g_ap_ssid, g_ap_pass
     );
@@ -703,15 +723,6 @@ static void start_webserver(void)
     ESP_LOGI(TAG, "Webserver started on http://%s/", AP_IP_ADDR);
 }
 
-static void restart_webserver(void)
-{
-    if (s_httpd) {
-        httpd_stop(s_httpd);
-        s_httpd = NULL;
-    }
-    start_webserver();
-}
-
 // ======================================================
 //                  MQTT Broker
 // ======================================================
@@ -757,7 +768,7 @@ static void mqtt_broker_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static void start_mqtt_broker_deferred(void)
+static void start_mqtt_broker(void)
 {
     if (s_broker_task || s_broker_running) {
         ESP_LOGI(TAG, "Broker already running");
@@ -805,8 +816,9 @@ void app_main(void)
     // Start SoftAP (creates AP netif)
     wifi_init_softap();
 
-    // Do not start webserver yet
-    // start_webserver();
+    start_webserver();
+    start_mqtt_broker();
+    start_oled();
 
     // Init USB Serial/JTAG driver for PPP
     usb_serial_jtag_driver_config_t usb_cfg = {
@@ -852,41 +864,6 @@ void app_main(void)
 
         if (bits & PPP_CONNECTED_BIT) {
             ESP_LOGI(TAG, "PPP link up; routing between AP <-> PPP active.");
-            // safe here (app task), not tcpip thread
-            ESP_LOGI(TAG, "Restarting webserver now that PPP is up");
-            restart_webserver();
-
-            ESP_LOGI(TAG, "PPP connected -> starting MQTT broker");
-            start_mqtt_broker_deferred();
-
-            /* --- u8g2 HAL init (I2C) --- */
-            u8g2_esp32_hal_t hal = U8G2_ESP32_HAL_DEFAULT;
-            hal.bus.i2c.sda = OLED_SDA;
-            hal.bus.i2c.scl = OLED_SCL;
-            hal.reset = U8G2_ESP32_HAL_UNDEFINED;  // no reset pin on abrobot-oled
-            hal.dc    = U8G2_ESP32_HAL_UNDEFINED;  // not used for I2C
-
-            u8g2_esp32_hal_init(hal);
-
-            /* --- Setup SSD1306 128x64 buffer (we draw only in 72x40 window) --- */
-            u8g2_Setup_ssd1306_i2c_128x64_noname_f(
-                &u8g2,
-                U8G2_R0,
-                u8g2_esp32_i2c_byte_cb,
-                u8g2_esp32_gpio_and_delay_cb
-            );
-
-            /* Set I2C address explicitly */
-            u8g2_SetI2CAddress(&u8g2, I2C_ADDR_8BIT);
-
-            u8g2_InitDisplay(&u8g2);
-            u8g2_SetPowerSave(&u8g2, 0);     // wake the panel
-            u8g2_SetContrast(&u8g2, 255);    // max contrast
-
-            ESP_LOGI(TAG, "abrobot-oled init OK. Active window %dx%d @ offset (%d,%d)",
-                     width, height, xOffset, yOffset);
-
-            xTaskCreate(oled_task, "oled_task", 4096, NULL, 5, NULL);
         }
 
         if (bits & PPP_DISCONN_BIT) {
