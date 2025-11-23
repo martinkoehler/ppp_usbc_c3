@@ -1,3 +1,29 @@
+/*
+ * PPP-over-USB + WiFi SoftAP Router (ESP32-C3)
+ *
+ * This application runs on an ESP32-C3 device and creates a router
+ * that bridges a PPP connection from the USB Serial/JTAG peripheral
+ * with a WiFi SoftAP network. It serves an HTTP status/control page,
+ * runs a local MQTT broker, and displays power telemetry on an OLED.
+ *
+ * Features:
+ * - Accepts PPP connections over USB CDC (PPP-over-Serial/JTAG)
+ * - Hosted WiFi Access Point (SoftAP) configurable via web UI/NVS
+ * - HTTP server with auto-refresh, AP config, DHCP station info, PPP status
+ * - Built-in MQTT broker (Mosquitto port) for local telemetry/messages
+ * - Collects and displays MQTT solar power value on OLED display
+ * - Stores WiFi AP config in NVS flash, allows secure/unencrypted AP
+ * - All IP/subnet setup is static ("no NAT", PPP and AP in distinct subnets)
+ * - Robust to power-loss; minimal RAM/stack usage (heap pages, tasks)
+ *
+ * Modules:
+ * - OLED display driver via u8g2 library
+ * - WiFi, PPP, NVS, HTTPD, MQTT broker, FreeRTOS tasks & synchronization
+ * 
+ * Author: Martin Köhler [martinkoehler]
+ * License: GPL 3
+ */
+
 #include <string.h>
 #include <stdio.h>
 
@@ -12,108 +38,105 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 
-// OLED Display
+// OLED display libraries
 #include "u8g2.h"
-#include "u8g2_esp32_hal.h"   // from u8g2-hal-esp-idf component
+#include "u8g2_esp32_hal.h"   // HAL for ESP32 and u8g2 display
 
+/* === OLED Configuration === */
+#define OLED_SDA GPIO_NUM_5               // I2C SDA pin
+#define OLED_SCL GPIO_NUM_6               // I2C SCL pin
+#define OLED_RST U8G2_ESP32_HAL_UNDEFINED // No reset pin in use
 
-/* Pins */
-#define OLED_SDA GPIO_NUM_5
-#define OLED_SCL GPIO_NUM_6
-#define OLED_RST U8G2_ESP32_HAL_UNDEFINED  // no reset pin on your board
+// Display window size and active drawing region offsets
+static const int width   = 72;   // Width of active display area
+static const int height  = 40;   // Height of active display area
+static const int xOffset = 28;   // Horizontal offset from origin
+static const int yOffset = 18;   // Vertical offset from origin
 
-/* Display + workaround window */
-static const int width   = 72;
-static const int height  = 40;
-static const int xOffset = 28;
-static const int yOffset = 18;
-
-/* I2C address (7-bit 0x3C; u8g2 wants 8-bit shifted) */
+// I2C display address (u8g2 requires 8-bit form)
 static const uint8_t I2C_ADDR_8BIT = (0x3C << 1);
 
-static u8g2_t u8g2;
+static u8g2_t u8g2; // OLED driver handle
 
-
+/* === LwIP and PPP === */
 #include "lwip/err.h"
 #include "lwip/sys.h"
 #include "lwip/netif.h"
 #include "lwip/ip4_addr.h"
-
-// PPP headers
 #include "netif/ppp/ppp.h"
 #include "netif/ppp/pppapi.h"
 #include "netif/ppp/pppos.h"
 #include "netif/ppp/ppp_impl.h"
 
-
-// USB Serial/JTAG
+/* === USB Serial/JTAG input for PPP === */
 #include "driver/usb_serial_jtag.h"
 
-// WiFi SoftAP
+/* === WiFi SoftAP === */
 #include "esp_wifi.h"
 #include "esp_mac.h"
 
-// HTTP server
+/* === HTTP Server for configuration/API === */
 #include "esp_http_server.h"
 
-// MQTT broker (Mosquitto port)
+/* === Embedded MQTT broker === */
 #include "mosq_broker.h"
-// -------- MQTT broker state --------
+
+// Broker state tracking
 static TaskHandle_t s_broker_task = NULL;
 static bool s_broker_running = false;
 #define MQTT_BROKER_PORT 1883
 
 static const char *TAG = "ppp_usb_ap_web";
 
+/* === Web UI Auto-refresh and OBK telemetry === */
+#define PAGE_REFRESH_SEC 3   // HTTP status page auto-refresh interval (sec)
+#define OBK_POWER_TOPIC "obk_wr/power/get"  // The MQTT topic for OBK telemetry
+static char g_obk_power[64] = "N/A"; // Last received OBK power value
+static SemaphoreHandle_t g_obk_mutex = NULL; // Mutex for OBK telemetry
 
-// -------- Web refresh --------
-#define PAGE_REFRESH_SEC 3   // NEW: auto refresh interval
-
-// -------- OBK power value from MQTT --------
-#define OBK_POWER_TOPIC "obk_wr/power/get"  // NEW
-static char g_obk_power[64] = "N/A";        // NEW: last payload as string
-static SemaphoreHandle_t g_obk_mutex = NULL; // NEW: protects g_obk_power
-
-// --------- DEFAULT CONFIG (used if NVS empty) ----------
+/* === Default WiFi Access Point Config === */
 #define DEFAULT_AP_SSID     "ESP32C3-PPP-AP"
 #define DEFAULT_AP_PASS     "12345678"
 #define AP_CHANNEL          1
 #define AP_MAX_CONN         4
-
-// SoftAP subnet (different from PPP subnet!)
+// SoftAP runs at 192.168.4.1/24; PPP is separate IP subnet
 #define AP_IP_ADDR     "192.168.4.1"
 #define AP_GATEWAY     "192.168.4.1"
 #define AP_NETMASK     "255.255.255.0"
-// ------------------------------------------------------
 
-// NVS keys
+// === NVS keys/namespace for AP Config ===
 #define NVS_NS   "apcfg"
 #define NVS_KEY_SSID "ssid"
 #define NVS_KEY_PASS "pass"
 
-// Current AP creds in RAM
+// RAM copies of current AP credentials
 static char g_ap_ssid[33] = DEFAULT_AP_SSID;
 static char g_ap_pass[65] = DEFAULT_AP_PASS;
 
-// --- PPP state ---
+/* ==== PPP state ==== */
 static ppp_pcb *ppp = NULL;
-static struct netif ppp_netif;
+static struct netif ppp_netif; // lwIP network interface handle
 
-// esp-netif handle for AP
+// esp-netif handle for AP interface
 static esp_netif_t *ap_netif = NULL;
 
-// HTTP server handle
+// HTTP server state
 static httpd_handle_t s_httpd = NULL;
 
-// Event bits
+// FreeRTOS event bits for PPP status
 static EventGroupHandle_t s_event_group;
 #define PPP_CONNECTED_BIT BIT0
 #define PPP_DISCONN_BIT   BIT1
-#define PPP_MRU_MTU 512
-// ======================================================
-//                 NVS AP CONFIG
-// ======================================================
+#define PPP_MRU_MTU 512 // Custom PPP MRU/MTU for limited links
 
+// =========================================================================
+//                NVS Flash Storage - Load & Save AP config
+// =========================================================================
+
+/**
+ * Load WiFi AP SSID/password from NVS flash.
+ * If no valid data, use defaults.
+ */
 static void load_ap_config_from_nvs(void)
 {
     nvs_handle_t nvs;
@@ -142,6 +165,9 @@ static void load_ap_config_from_nvs(void)
              g_ap_ssid, (int)strlen(g_ap_pass));
 }
 
+/**
+ * Save WiFi AP SSID/password into NVS flash, for persistence
+ */
 static esp_err_t save_ap_config_to_nvs(const char *ssid, const char *pass)
 {
     nvs_handle_t nvs;
@@ -159,24 +185,30 @@ static esp_err_t save_ap_config_to_nvs(const char *ssid, const char *pass)
     return err;
 }
 
-// ======================================================
-//              PPP over USB Serial/JTAG
-// ======================================================
+// =========================================================================
+//                PPP over USB Serial/JTAG
+// =========================================================================
 
-// RX task: reads from USB CDC, feeds PPP
+/**
+ * PPP RX task: reads bytes from USB Serial/JTAG and feeds to PPP stack.
+ * This is the main input point for PPP-over-Serial traffic.
+ */
 static void ppp_usb_rx_task(void *arg)
 {
     uint8_t buf[256];
     while (1) {
         int n = usb_serial_jtag_read_bytes(buf, sizeof(buf), pdMS_TO_TICKS(100));
         if (n > 0 && ppp) {
-            pppos_input_tcpip(ppp, buf, n);
+            pppos_input_tcpip(ppp, buf, n); // Pass to PPPoS lwIP
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
-// Output callback: PPP -> USB CDC
+/**
+ * PPP Output callback: Called by lwIP when PPP needs to transmit data.
+ * Writes outgoing PPP bytes to USB Serial/JTAG.
+ */
 static u32_t ppp_output_cb(ppp_pcb *pcb, const void *data, u32_t len, void *ctx)
 {
     int written = usb_serial_jtag_write_bytes(data, len, pdMS_TO_TICKS(1000));
@@ -187,11 +219,15 @@ static u32_t ppp_output_cb(ppp_pcb *pcb, const void *data, u32_t len, void *ctx)
     return (u32_t)written;
 }
 
-// PPP link status
+/**
+ * PPP Link status callback (called when PPP connects/disconnects)
+ * Sets event bits, logs status and IPs.
+ */
 static void ppp_status_cb(ppp_pcb *pcb, int err_code, void *ctx)
 {
     switch (err_code) {
         case PPPERR_NONE: {
+            // Connected successfully
             ESP_LOGI(TAG, "PPP connected");
 
             ip4_addr_t ip = pcb->netif->ip_addr.u_addr.ip4;
@@ -207,19 +243,24 @@ static void ppp_status_cb(ppp_pcb *pcb, int err_code, void *ctx)
         }
         case PPPERR_USER:
         default:
+            // PPP error or disconnected
             ESP_LOGW(TAG, "PPP error/closed: %d", err_code);
             xEventGroupSetBits(s_event_group, PPP_DISCONN_BIT);
             break;
     }
 }
 
-// ======================================================
-//                 OLED
-// ======================================================
+// =========================================================================
+//                OLED Display Handling
+// =========================================================================
 
+/**
+ * Renders OLED UI: solar power value, simple title.
+ * Protected by mutex; copies latest value from MQTT telemetry.
+ */
 static void handle_oled(void)
 {
-    // last OBK power value
+    // Copy last OBK power telemetry (mutex protected)
     char power_copy[30];
     strlcpy(power_copy, "N/A", sizeof(power_copy));
 
@@ -227,7 +268,6 @@ static void handle_oled(void)
         strlcpy(power_copy, g_obk_power, sizeof(power_copy));
         xSemaphoreGive(g_obk_mutex);
     }
-
 
     u8g2_ClearBuffer(&u8g2);
     u8g2_SetFont(&u8g2, u8g2_font_4x6_tr);
@@ -239,53 +279,67 @@ static void handle_oled(void)
     snprintf(buffer, sizeof(buffer), "%s W", power_copy);
     u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 30, buffer);
 
-    u8g2_SendBuffer(&u8g2);
+    u8g2_SendBuffer(&u8g2); // flush to display
 }
 
+/**
+ * Task that periodically refreshes the OLED display
+ * and redraws the latest OBK power value.
+ */
 static void oled_task(void *arg)
 {
     while (1) {
         handle_oled();
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Update every second
     }
 }
 
-
+/**
+ * OLED initialization and display setup.
+ * Configures I2C, sets up the display buffer,
+ * and launches the OLED task.
+ */
 static void start_oled(void)
-{           /* --- u8g2 HAL init (I2C) --- */
-            u8g2_esp32_hal_t hal = U8G2_ESP32_HAL_DEFAULT;
-            hal.bus.i2c.sda = OLED_SDA;
-            hal.bus.i2c.scl = OLED_SCL;
-            hal.reset = U8G2_ESP32_HAL_UNDEFINED;  // no reset pin on abrobot-oled
-            hal.dc    = U8G2_ESP32_HAL_UNDEFINED;  // not used for I2C
+{
+    // HAL struct for I2C pins; reset unused
+    u8g2_esp32_hal_t hal = U8G2_ESP32_HAL_DEFAULT;
+    hal.bus.i2c.sda = OLED_SDA;
+    hal.bus.i2c.scl = OLED_SCL;
+    hal.reset = U8G2_ESP32_HAL_UNDEFINED;
+    hal.dc    = U8G2_ESP32_HAL_UNDEFINED;
 
-            u8g2_esp32_hal_init(hal);
+    u8g2_esp32_hal_init(hal);
 
-            /* --- Setup SSD1306 128x64 buffer (we draw only in 72x40 window) --- */
-            u8g2_Setup_ssd1306_i2c_128x64_noname_f(
-                &u8g2,
-                U8G2_R0,
-                u8g2_esp32_i2c_byte_cb,
-                u8g2_esp32_gpio_and_delay_cb
-            );
+    // SSD1306 display setup
+    u8g2_Setup_ssd1306_i2c_128x64_noname_f(
+        &u8g2,
+        U8G2_R0,
+        u8g2_esp32_i2c_byte_cb,
+        u8g2_esp32_gpio_and_delay_cb
+    );
 
-            /* Set I2C address explicitly */
-            u8g2_SetI2CAddress(&u8g2, I2C_ADDR_8BIT);
+    // Assign I2C address
+    u8g2_SetI2CAddress(&u8g2, I2C_ADDR_8BIT);
 
-            u8g2_InitDisplay(&u8g2);
-            u8g2_SetPowerSave(&u8g2, 0);     // wake the panel
-            u8g2_SetContrast(&u8g2, 255);    // max contrast
+    // Initialize and enable display
+    u8g2_InitDisplay(&u8g2);
+    u8g2_SetPowerSave(&u8g2, 0);     // Wake panel
+    u8g2_SetContrast(&u8g2, 255);    // Full contrast
 
-            ESP_LOGI(TAG, "abrobot-oled init OK. Active window %dx%d @ offset (%d,%d)",
-                     width, height, xOffset, yOffset);
+    ESP_LOGI(TAG, "abrobot-oled init OK. Active window %dx%d @ offset (%d,%d)",
+             width, height, xOffset, yOffset);
 
-            xTaskCreate(oled_task, "oled_task", 4096, NULL, 5, NULL);
+    // Launch main OLED background task
+    xTaskCreate(oled_task, "oled_task", 4096, NULL, 5, NULL);
 }
 
-// ======================================================
-//                 WiFi SoftAP
-// ======================================================
+// =========================================================================
+//                WiFi SoftAP (Access Point) Handling
+// =========================================================================
 
+/**
+ * WiFi event handler: tracks clients joining/leaving AP.
+ */
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
 {
@@ -298,6 +352,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
+/**
+ * Apply new AP config and restart WiFi SoftAP.
+ * Used after changing SSID/password.
+ */
 static void apply_ap_config_and_restart(void)
 {
     wifi_config_t wifi_config = {0};
@@ -311,6 +369,7 @@ static void apply_ap_config_and_restart(void)
 
     strncpy((char *)wifi_config.ap.password, g_ap_pass, sizeof(wifi_config.ap.password));
 
+    // Open network if password is blank
     if (strlen(g_ap_pass) == 0) {
         wifi_config.ap.authmode = WIFI_AUTH_OPEN;
     }
@@ -322,6 +381,10 @@ static void apply_ap_config_and_restart(void)
     ESP_LOGI(TAG, "SoftAP restarted. SSID='%s'", g_ap_ssid);
 }
 
+/**
+ * Initialize WiFi SoftAP, configure static IP.
+ * Applies current RAM/global credentials on startup.
+ */
 static void wifi_init_softap(void)
 {
     ESP_LOGI(TAG, "Initializing WiFi SoftAP...");
@@ -337,7 +400,7 @@ static void wifi_init_softap(void)
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
 
-    // Configure static AP IP
+    // Setup static IP for AP
     ESP_ERROR_CHECK(esp_netif_dhcps_stop(ap_netif));
     esp_netif_ip_info_t ip_info = {0};
     ip4_addr_t tmp;
@@ -349,7 +412,7 @@ static void wifi_init_softap(void)
     ESP_ERROR_CHECK(esp_netif_set_ip_info(ap_netif, &ip_info));
     ESP_ERROR_CHECK(esp_netif_dhcps_start(ap_netif));
 
-    // Apply AP config from globals
+    // Apply AP config
     wifi_config_t wifi_config = {0};
     wifi_config.ap.channel = AP_CHANNEL;
     wifi_config.ap.max_connection = AP_MAX_CONN;
@@ -368,10 +431,18 @@ static void wifi_init_softap(void)
     ESP_LOGI(TAG, "SoftAP up. SSID=%s IP=%s", g_ap_ssid, AP_IP_ADDR);
 }
 
-// ======================================================
-//                  HTTP SERVER
-// ======================================================
+// =========================================================================
+//                HTTP Web Server (Config/Status UI)
+// =========================================================================
 
+/**
+ * Generates HTML table of all WiFi-connected client stations.
+ * Displays MAC and DHCP-assigned IP for each client.
+ * Uses DHCP MAC-to-IP helper for current mapping.
+ *
+ * @param out     Destination buffer (large heap string)
+ * @param out_len Maximum buffer length
+ */
 static void append_station_table(char *out, size_t out_len)
 {
     wifi_sta_list_t sta_list = {0};
@@ -384,17 +455,17 @@ static void append_station_table(char *out, size_t out_len)
         return;
     }
 
-    // Prepare MAC->IP pairs for DHCP server query
+    // Prepare list for DHCP MAC-to-IP mapping
     esp_netif_pair_mac_ip_t pairs[AP_MAX_CONN];
     int n = sta_list.num;
     if (n > AP_MAX_CONN) n = AP_MAX_CONN;
 
     for (int i = 0; i < n; i++) {
         memcpy(pairs[i].mac, sta_list.sta[i].mac, 6);
-        pairs[i].ip.addr = 0; // will be filled by dhcps
+        pairs[i].ip.addr = 0; // will be filled by DHCP server
     }
 
-    // Ask DHCP server for IPs corresponding to these MACs
+    // Query DHCP server for IP for each MAC
     esp_err_t err = esp_netif_dhcps_get_clients_by_mac(ap_netif, n, pairs);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "esp_netif_dhcps_get_clients_by_mac failed: %s", esp_err_to_name(err));
@@ -418,9 +489,14 @@ static void append_station_table(char *out, size_t out_len)
     strlcat(out, "</table>", out_len);
 }
 
+/**
+ * MQTT broker control/status panel for web UI.
+ * Displays broker port, heap free, latest OBK power message,
+ * and connection info for AP/PPP clients.
+ */
 static void append_mqtt_panel(char *out, size_t out_len)
 {
-    // PPP info if available
+    // PPP address if available
     ip4_addr_t ppp_ip = {0};
     if (ppp && ppp->netif) {
         ppp_ip = ppp->netif->ip_addr.u_addr.ip4;
@@ -440,7 +516,7 @@ static void append_mqtt_panel(char *out, size_t out_len)
              (unsigned long)esp_get_free_heap_size());
     strlcat(out, line, out_len);
 
-    // show last OBK power value
+    // Display last OBK power message (from MQTT)
     char power_copy[64];
     strlcpy(power_copy, "N/A", sizeof(power_copy));
 
@@ -454,7 +530,7 @@ static void append_mqtt_panel(char *out, size_t out_len)
              OBK_POWER_TOPIC, power_copy);
     strlcat(out, line, out_len);
 
-    // Connection hints
+    // Connection instructions
     strlcat(out, "<p><b>Connect from WiFi AP clients:</b><br>", out_len);
     snprintf(line, sizeof(line),
              "<code>mqtt://%s:%d</code></p>",
@@ -474,9 +550,14 @@ static void append_mqtt_panel(char *out, size_t out_len)
 }
 
 
+/**
+ * HTTP GET "/" handler: HTML status/control page for router.
+ * Displays PPP link status, AP status, stats, change AP form,
+ * MQTT broker info, clients table, and auto-refresh indicator.
+ */
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
-    // Keep stack tiny: build HTML on heap
+    // Allocate page heap to keep stack minimal (esp32 HTTPD)
     const size_t page_len = 4096;
     char *page = (char *)malloc(page_len);
     if (!page) {
@@ -485,7 +566,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     }
     page[0] = 0;
 
-    // PPP info (if up)
+    // Gather PPP link info (if up)
     ip4_addr_t ppp_ip = {0}, ppp_gw = {0}, ppp_nm = {0};
     if (ppp && ppp->netif) {
         ppp_ip = ppp->netif->ip_addr.u_addr.ip4;
@@ -493,17 +574,17 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         ppp_nm = ppp->netif->netmask.u_addr.ip4;
     }
 
-    // AP info
+    // AP info for diagnostic
     esp_netif_ip_info_t ap_info = {0};
     esp_netif_get_ip_info(ap_netif, &ap_info);
 
-    // Header + status + form
+    // HTML with embedded JavaScript for auto-refresh badge
     snprintf(page, page_len,
         "<!doctype html><html><head>"
         "<meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         "<title>ESP32C3 PPP Router</title>"
-        // NEW: JS auto-refresh + UI hint
+        // Auto-refresh implementation (periodic, doesn't trigger when editing)
         "<script>"
         "(function(){"
         "  var periodSec = %d;"
@@ -562,7 +643,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "</style>"
         "</head><body>"
         "<h2>ESP32-C3 PPP-over-USB + SoftAP Router (no NAT)</h2>"
-        // small status badge placeholder
+        // Status badge: auto-refresh UI/hint
         "<div id='refreshBadge' "
         "     style='position:fixed;top:10px;right:10px;"
         "            background:#eee;border:1px solid #ccc;"
@@ -574,7 +655,6 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<p><b>PPP IP:</b> " IPSTR "<br>"
         "<b>PPP GW:</b> " IPSTR "<br>"
         "<b>PPP Netmask:</b> " IPSTR "</p>"
-
         "<hr>"
         "<h3>Change AP SSID / Password</h3>"
         "<form method='POST' action='/set'>"
@@ -589,12 +669,12 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         g_ap_ssid, g_ap_pass
     );
 
-        // MQTT Broker panel
+    // Broker status panel
     append_mqtt_panel(page, page_len);
 
     strlcat(page, "<hr>", page_len);
 
-    // Connected clients table (uses your DHCP MAC->IP helper)
+    // Table of connected WiFi clients
     append_station_table(page, page_len);
 
     strlcat(page, "</body></html>", page_len);
@@ -606,12 +686,12 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-
-
-
+/**
+ * Decode URL-encoded string in-place (minimal implementation).
+ * Handles + as space, %HH hex escapes.
+ */
 static void url_decode_inplace(char *s)
 {
-    // minimal www-form decode: + -> space, %HH -> byte
     char *p = s, *q = s;
     while (*p) {
         if (*p == '+') {
@@ -628,6 +708,11 @@ static void url_decode_inplace(char *s)
     *q = 0;
 }
 
+/**
+ * HTTP POST "/set" handler: accepts new SSID/password for AP,
+ * validates inputs, saves to NVS, applies config and restarts AP.
+ * HTTP 303 redirect back to "/".
+ */
 static esp_err_t set_post_handler(httpd_req_t *req)
 {
     char buf[256];
@@ -638,7 +723,7 @@ static esp_err_t set_post_handler(httpd_req_t *req)
     }
     buf[len] = 0;
 
-    // parse "ssid=...&pass=..."
+    // Extract "ssid=...&pass=..."
     char ssid[33] = {0};
     char pass[65] = {0};
 
@@ -665,6 +750,7 @@ static esp_err_t set_post_handler(httpd_req_t *req)
         url_decode_inplace(pass);
     }
 
+    // Input validation
     if (strlen(ssid) == 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "SSID must not be empty");
         return ESP_FAIL;
@@ -676,30 +762,34 @@ static esp_err_t set_post_handler(httpd_req_t *req)
 
     ESP_LOGI(TAG, "New AP config: SSID='%s' PASS len=%d", ssid, (int)strlen(pass));
 
-    // Save to NVS
+    // Save to NVS flash
     esp_err_t err = save_ap_config_to_nvs(ssid, pass);
     if (err != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS save failed");
         return ESP_FAIL;
     }
 
-    // Update globals + restart AP
+    // Update RAM/global and restart AP
     strlcpy(g_ap_ssid, ssid, sizeof(g_ap_ssid));
     strlcpy(g_ap_pass, pass, sizeof(g_ap_pass));
     apply_ap_config_and_restart();
 
-    // redirect back to /
+    // HTTP 303 "See Other" redirect to "/"
     httpd_resp_set_status(req, "303 See Other");
     httpd_resp_set_hdr(req, "Location", "/");
     httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }
 
+/**
+ * Launches web server, registers handlers for "/" and "/set"
+ * Uses large stack to avoid overflows.
+ */
 static void start_webserver(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
-    config.ctrl_port = 32768; // avoid clashes in some setups
+    config.ctrl_port = 32768; // Avoid port conflicts
     config.stack_size = 8192;
 
     ESP_ERROR_CHECK(httpd_start(&s_httpd, &config));
@@ -723,11 +813,21 @@ static void start_webserver(void)
     ESP_LOGI(TAG, "Webserver started on http://%s/", AP_IP_ADDR);
 }
 
-// ======================================================
-//                  MQTT Broker
-// ======================================================
+// =========================================================================
+//             MQTT Broker and Power Telemetry Handling
+// =========================================================================
 
-// called by mosquitto broker whenever it processes a message
+/**
+ * MQTT broker message callback (called for every brokered MQTT message).
+ * Stores payload of OBK_POWER_TOPIC in mutex-protected global for Web/OLED display.
+ *
+ * @param client  Client ID string (not used)
+ * @param topic   MQTT topic
+ * @param data    MQTT message payload
+ * @param len     Length
+ * @param qos     MQTT QOS (not used)
+ * @param retain  MQTT retain flag (not used)
+ */
 static void broker_message_cb(char *client, char *topic,
                               char *data, int len, int qos, int retain)
 {
@@ -746,21 +846,24 @@ static void broker_message_cb(char *client, char *topic,
     }
 }
 
-
+/**
+ * MQTT broker main task: runs Mosquitto broker on local port.
+ * Listens on all interfaces, provides message hook for telemetry.
+ */
 static void mqtt_broker_task(void *arg)
 {
     struct mosq_broker_config cfg = {
-        .host = "0.0.0.0",          // listen on all IPv4 interfaces (AP + PPP)
+        .host = "0.0.0.0",          // bind all IPv4 interfaces
         .port = MQTT_BROKER_PORT,
-        .tls_cfg = NULL,            // plain TCP for now
-        .handle_message_cb = broker_message_cb   //hook callback
+        .tls_cfg = NULL,            // plain TCP
+        .handle_message_cb = broker_message_cb   // hook for OBK telemetry
     };
 
     ESP_LOGI(TAG, "Mosquitto broker starting on port %d (host=%s)...",
              cfg.port, cfg.host);
 
     s_broker_running = true;
-    int rc = mosq_broker_run(&cfg);   // blocks until stopped
+    int rc = mosq_broker_run(&cfg);   // blocks until stop
     s_broker_running = false;
 
     ESP_LOGW(TAG, "Mosquitto broker exited rc=%d", rc);
@@ -768,6 +871,10 @@ static void mqtt_broker_task(void *arg)
     vTaskDelete(NULL);
 }
 
+/**
+ * Starts MQTT broker in background FreeRTOS task.
+ * Ensures only single instance runs.
+ */
 static void start_mqtt_broker(void)
 {
     if (s_broker_task || s_broker_running) {
@@ -775,18 +882,18 @@ static void start_mqtt_broker(void)
         return;
     }
 
-    // Run broker in its own task; needs ~4–5kB stack minimum, 6–8kB is safer.
+    // Need ~8KB stack! Priority below WiFi/PPP tasks
     xTaskCreate(
         mqtt_broker_task,
         "mosq_broker",
         8192,          // stack
         NULL,
-        8,             // priority (below WiFi/PPP tasks)
+        8,             // priority
         &s_broker_task
     );
 }
 
-/*
+/* Optionally: stop MQTT broker task
 static void stop_mqtt_broker(void)
 {
     if (!s_broker_running) return;
@@ -794,11 +901,14 @@ static void stop_mqtt_broker(void)
     mosq_broker_stop();  // causes mosq_broker_run() to return
 } */
 
+// =========================================================================
+//                         Main entry point
+// =========================================================================
 
-// ======================================================
-//                      app_main
-// ======================================================
-
+/**
+ * Application main entry point (FreeRTOS). 
+ * Sets up flash/NVS, TCP/IP, WiFi AP, PPP, HTTP server, MQTT broker, and OLED task.
+ */
 void app_main(void)
 {
     ESP_ERROR_CHECK(nvs_flash_init());
@@ -807,7 +917,7 @@ void app_main(void)
 
     s_event_group = xEventGroupCreate();
 
-    g_obk_mutex = xSemaphoreCreateMutex();  // NEW
+    g_obk_mutex = xSemaphoreCreateMutex();  // Telemetry mutex
     assert(g_obk_mutex);
 
     // Load AP config from flash
@@ -816,8 +926,13 @@ void app_main(void)
     // Start SoftAP (creates AP netif)
     wifi_init_softap();
 
+    // Start HTTP server for status/configure
     start_webserver();
+
+    // Start MQTT broker
     start_mqtt_broker();
+
+    // Start OLED display task
     start_oled();
 
     // Init USB Serial/JTAG driver for PPP
@@ -829,30 +944,30 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Starting PPP over USB Serial/JTAG...");
 
-    // Create PPPoS interface
+    // lwIP: Create PPPoS interface
     memset(&ppp_netif, 0, sizeof(ppp_netif));
     ppp = pppapi_pppos_create(&ppp_netif, ppp_output_cb, ppp_status_cb, NULL);
     assert(ppp);
 
-    // tell lwIP PPP to negotiate small MRU/MTU
+    // Configure PPP for small MRU/MTU
     ppp_send_config(ppp, PPP_MRU_MTU, 0xFFFFFFFF, 0, 0);
     ppp_recv_config(ppp, PPP_MRU_MTU, 0xFFFFFFFF, 0, 0);
+    ppp->netif->mtu = PPP_MRU_MTU;
 
-    ppp->netif->mtu = PPP_MRU_MTU;   // clamp outgoing packet size
-
-    // No auth (matches your pppd "noauth")
+    // No authentication ("noauth" mode for pppd peers)
     ppp_set_auth(ppp, PPPAUTHTYPE_NONE, NULL, NULL);
     ppp_set_usepeerdns(ppp, true);
 
     // Make PPP default route
     pppapi_set_default(ppp);
 
-    // Start PPP RX task
+    // Start PPP RX task to feed PPP layer from USB
     xTaskCreate(ppp_usb_rx_task, "ppp_usb_rx", 4096, NULL, 10, NULL);
 
-    // Connect PPP
+    // Connect PPP (start negotiation)
     pppapi_connect(ppp, 0);
 
+    // Wait for PPP events; reconnect if PPP goes down
     while (1) {
         EventBits_t bits = xEventGroupWaitBits(
             s_event_group,
@@ -873,4 +988,3 @@ void app_main(void)
         }
     }
 }
-
