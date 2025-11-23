@@ -34,23 +34,100 @@ static const uint8_t I2C_ADDR_8BIT = (0x3C << 1);
 static const char *TAG = "oled";
 static u8g2_t u8g2; // OLED driver handle
 
+// statics (oben in der Datei, dort wo width/height/xOffset/yOffset sind)
+static bool screensaver = false;
+static int idle_seconds = 0;
+static const int SCREENSAVER_DELAY = 60; // s
+static const uint8_t CONTRAST = 125;   // 0..255 (für kleines Display niedrig halten)
+static const uint8_t DIM_CONTRAST = 12;   // 0..255 (für kleines Display niedrig halten)
+static int ss_x, ss_y, ss_dx = 1, ss_dy = 1;
+static int normal_jitter_phase = 0;
+
+
+// Hilfsfunktion: sichere Grenzen für die Animation berechnen
+static void ss_init_bounds(void) {
+    // verwende den Bereich innerhalb deines Offsets und der width/height
+    int drawable_w = width;
+    int drawable_h = height;
+    // starte in der Mitte des nutzbaren Bereichs
+    ss_x = xOffset + drawable_w / 2;
+    ss_y = yOffset + drawable_h / 2;
+    ss_dx = 1; ss_dy = 1;
+}
+
+static void draw_screensaver(u8g2_t *u8g2) {
+    int min_x = xOffset + 1;
+    int min_y = yOffset + 1;
+    int max_x = xOffset + width - 2;
+    int max_y = yOffset + height - 2;
+
+    ss_x += ss_dx;
+    ss_y += ss_dy;
+    if (ss_x <= min_x || ss_x >= max_x) ss_dx = -ss_dx;
+    if (ss_y <= min_y || ss_y >= max_y) ss_dy = -ss_dy;
+
+    u8g2_ClearBuffer(u8g2);
+    // sehr kleines Element, passend für kleine Displays
+    u8g2_DrawDisc(u8g2, ss_x, ss_y, 2, U8G2_DRAW_ALL);
+    u8g2_SendBuffer(u8g2);
+}
+
+static float parse_power(const char *s) {
+    if (!s || !*s) return 0.0f;
+    return strtof(s, NULL);
+}
+
 /**
  * @brief Renders OLED UI: solar power value, simple title.
  */
+
 static void handle_oled(void)
 {
     char power_copy[30];
     mqtt_broker_get_obk_power(power_copy, sizeof(power_copy));
+    float p = parse_power(power_copy);
+
+    if (p <= 0.0001f) {
+        idle_seconds++;
+    } else {
+        idle_seconds = 0;
+        if (screensaver) {
+            screensaver = false;
+            u8g2_SetPowerSave(&u8g2, 0);
+            u8g2_SetContrast(&u8g2, CONTRAST);
+        }
+    }
+
+    if (!screensaver && idle_seconds >= SCREENSAVER_DELAY) {
+        screensaver = true;
+        // wähle Option: komplett aus ODER dim + animate
+        // Option komplett aus:
+        // u8g2_SetPowerSave(&u8g2, 1);
+        // Option dim + animate:
+        u8g2_SetPowerSave(&u8g2, 0);
+        u8g2_SetContrast(&u8g2, DIM_CONTRAST);
+        ss_init_bounds();
+    }
+
+    if (screensaver) {
+        draw_screensaver(&u8g2);
+        return;
+    }
+
+    // Normale Anzeige mit gelegentlichem, kleinem Jitter (alle Aufrufe cycles)
+    normal_jitter_phase = (normal_jitter_phase + 1) % 60; // z.B. 1 px Veränderung pro Minute
+    int xoff = xOffset;
+    int yoff = yOffset;
+    if (normal_jitter_phase == 0) xoff += 1;
+    else if (normal_jitter_phase == 30) xoff -= 1;
 
     u8g2_ClearBuffer(&u8g2);
     u8g2_SetFont(&u8g2, u8g2_font_6x10_tr);
-
-    u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 20, "Solar power");
+    u8g2_DrawStr(&u8g2, xoff + 0, yoff + 15, "Power (W)"); // Koordinaten an kleine Höhe anpassen
     u8g2_SetFont(&u8g2, u8g2_font_9x15_tr);
     char buffer[32];
-    snprintf(buffer, sizeof(buffer), "%s W", power_copy);
-    u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 40, buffer);
-
+    snprintf(buffer, sizeof(buffer), "%s", power_copy);
+    u8g2_DrawStr(&u8g2, xoff + 0, yoff + 35, buffer);
     u8g2_SendBuffer(&u8g2);
 }
 
@@ -86,7 +163,7 @@ void oled_start(void)
     u8g2_SetI2CAddress(&u8g2, I2C_ADDR_8BIT);
     u8g2_InitDisplay(&u8g2);
     u8g2_SetPowerSave(&u8g2, 0);
-    u8g2_SetContrast(&u8g2, 255);
+    u8g2_SetContrast(&u8g2, CONTRAST);
 
     ESP_LOGI(TAG, "OLED init OK. Active window %dx%d @ offset (%d,%d)",
              width, height, xOffset, yOffset);
