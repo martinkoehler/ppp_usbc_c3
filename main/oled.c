@@ -43,12 +43,13 @@ static void handle_oled(void)
     mqtt_broker_get_obk_power(power_copy, sizeof(power_copy));
 
     u8g2_ClearBuffer(&u8g2);
-    u8g2_SetFont(&u8g2, u8g2_font_4x6_tr);
+    u8g2_SetFont(&u8g2, u8g2_font_6x10_tr);
 
-    u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 10, "Solar power");
+    u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 20, "Solar power");
+    u8g2_SetFont(&u8g2, u8g2_font_9x15_tr);
     char buffer[32];
     snprintf(buffer, sizeof(buffer), "%s W", power_copy);
-    u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 30, buffer);
+    u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 40, buffer);
 
     u8g2_SendBuffer(&u8g2);
 }
