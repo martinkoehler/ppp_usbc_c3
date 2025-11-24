@@ -34,6 +34,7 @@
 #include "web_server.h"
 #include "mqtt_broker.h"
 #include "oled.h"
+#include "watchdog.h"
 
 /* ------------------------- AP defaults ------------------------- */
 #define DEFAULT_AP_SSID     "ESP32C3-PPP-AP"
@@ -230,8 +231,10 @@ void app_main(void)
     mqtt_broker_start();
     oled_start();
     ppp_usb_start();
+    watchdog_start(10, 5000); // Reset after 10s, feeds every 5s
 
     /* app_main no longer needs a forever loop:
+     * watchdog loop runs in its own task.
      * PPP reconnect is handled inside ppp.c. */
 }
 
