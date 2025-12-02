@@ -1,0 +1,19 @@
+mqtt2sqlite
+===========
+
+Robust MQTT->SQLite collector.
+
+Env vars:
+  MQTT_BROKER (default 192.168.178.50)
+  MQTT_PORT (default 1883)
+  MQTT_TOPIC (default #)
+  MQTT_DB_PATH (default ./mqtt_messages.db)
+  NETWORK_FIX_SCRIPT (default ./handle_network_error.sh)
+  RECONNECT_MIN_S (default 2)
+  RECONNECT_MAX_S (default 60)
+  RETRY_SLEEP_AFTER_SCRIPT_S (default 5)
+  MQTT_LOG_INSERTS (set to 1 to log inserts)
+
+Binary installed to:
+  /usr/bin/mqtt_to_sqlite
+

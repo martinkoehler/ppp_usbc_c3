@@ -1,0 +1,11 @@
+config FREETZ_PACKAGE_MQTT2SQLITE
+	bool "mqtt2sqlite (MQTT -> SQLite collector)"
+	default n
+	select FREETZ_PACKAGE_MOSQUITTO
+	select FREETZ_LIB_libsqlite3
+	help
+	  A robust MQTT collector that subscribes to MQTT topics and stores
+	  messages into a local SQLite DB.
+
+	  Binary: /usr/bin/mqtt_to_sqlite
+
