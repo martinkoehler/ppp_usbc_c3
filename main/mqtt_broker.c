@@ -25,6 +25,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdint.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -32,6 +33,7 @@
 
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 
 #include "mosq_broker.h"
 
@@ -44,6 +46,7 @@ static bool s_broker_running = false;
 
 /* latest OBK power topic payload */
 static char g_obk_power[64] = "N/A";
+static int64_t g_obk_last_update_us = 0;
 static SemaphoreHandle_t g_obk_mutex = NULL;
 
 /* -------------------- Telemetry -------------------- */
@@ -73,6 +76,7 @@ static void broker_message_cb(char *client, char *topic, char *data,
             if (n >= (int)sizeof(g_obk_power)) n = sizeof(g_obk_power) - 1;
             memcpy(g_obk_power, data, n);
             g_obk_power[n] = 0;
+            g_obk_last_update_us = esp_timer_get_time();
             xSemaphoreGive(g_obk_mutex);
         }
     }
@@ -84,7 +88,11 @@ void mqtt_broker_get_obk_power(char *out, size_t out_len)
 
     strlcpy(out, "N/A", out_len);
     if (g_obk_mutex && xSemaphoreTake(g_obk_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
-        strlcpy(out, g_obk_power, out_len);
+        int64_t now_us = esp_timer_get_time();
+        int64_t age_us = (g_obk_last_update_us == 0) ? INT64_MAX : (now_us - g_obk_last_update_us);
+        if (age_us <= (int64_t)OBK_POWER_STALE_TIMEOUT_MS * 1000) {
+            strlcpy(out, g_obk_power, out_len);
+        }
         xSemaphoreGive(g_obk_mutex);
     }
 }
@@ -131,4 +139,3 @@ bool mqtt_broker_is_running(void)
 {
     return s_broker_running;
 }
-

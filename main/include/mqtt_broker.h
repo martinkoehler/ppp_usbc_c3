@@ -49,6 +49,8 @@ extern "C" {
 
 /** OBK topic whose payload is displayed on OLED / web UI. */
 #define OBK_POWER_TOPIC "obk_wr/power/get"
+/** Treat power telemetry as stale after this many milliseconds without updates. */
+#define OBK_POWER_STALE_TIMEOUT_MS 30000
 
 /**
  * @brief Start MQTT broker in background task.
@@ -82,4 +84,3 @@ void mqtt_broker_init_telemetry(void);
 #ifdef __cplusplus
 }
 #endif
-
