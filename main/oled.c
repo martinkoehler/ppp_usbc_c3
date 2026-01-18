@@ -16,6 +16,7 @@
 #include "freertos/task.h"
 
 #include "esp_log.h"
+#include "esp_wifi.h"
 
 #include "u8g2.h"
 #include "u8g2_esp32_hal.h"
@@ -43,6 +44,14 @@ static const uint8_t DIM_CONTRAST = 12;   // 0..255 (für kleines Display niedri
 static int ss_x, ss_y, ss_dx = 1, ss_dy = 1;
 static int normal_jitter_phase = 0;
 
+static int get_connected_client_count(void)
+{
+    wifi_sta_list_t sta_list = {0};
+    if (esp_wifi_ap_get_sta_list(&sta_list) != ESP_OK) {
+        return 0;
+    }
+    return sta_list.num;
+}
 
 // Hilfsfunktion: sichere Grenzen für die Animation berechnen
 static void ss_init_bounds(void) {
@@ -56,19 +65,33 @@ static void ss_init_bounds(void) {
 }
 
 static void draw_screensaver(u8g2_t *u8g2) {
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d", get_connected_client_count());
+
+    u8g2_SetFont(u8g2, u8g2_font_6x10_tr);
+    int text_w = u8g2_GetStrWidth(u8g2, buf);
+    int text_h = 10; // baseline height for 6x10 font
+
     int min_x = xOffset + 1;
-    int min_y = yOffset + 1;
-    int max_x = xOffset + width - 2;
+    int min_y = yOffset + text_h;
+    int max_x = xOffset + width - text_w - 1;
     int max_y = yOffset + height - 2;
+    if (max_x < min_x) {
+        min_x = max_x = xOffset + 1;
+    }
+    if (max_y < min_y) {
+        min_y = max_y = yOffset + text_h;
+    }
 
     ss_x += ss_dx;
     ss_y += ss_dy;
-    if (ss_x <= min_x || ss_x >= max_x) ss_dx = -ss_dx;
-    if (ss_y <= min_y || ss_y >= max_y) ss_dy = -ss_dy;
+    if (ss_x < min_x) { ss_x = min_x; ss_dx = -ss_dx; }
+    if (ss_x > max_x) { ss_x = max_x; ss_dx = -ss_dx; }
+    if (ss_y < min_y) { ss_y = min_y; ss_dy = -ss_dy; }
+    if (ss_y > max_y) { ss_y = max_y; ss_dy = -ss_dy; }
 
     u8g2_ClearBuffer(u8g2);
-    // sehr kleines Element, passend für kleine Displays
-    u8g2_DrawDisc(u8g2, ss_x, ss_y, 2, U8G2_DRAW_ALL);
+    u8g2_DrawStr(u8g2, ss_x, ss_y, buf);
     u8g2_SendBuffer(u8g2);
 }
 
@@ -170,4 +193,3 @@ void oled_start(void)
 
     xTaskCreate(oled_task, "oled_task", 4096, NULL, 5, NULL);
 }
-
