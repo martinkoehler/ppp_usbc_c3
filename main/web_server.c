@@ -22,7 +22,10 @@
 #include "esp_netif.h"
 #include "esp_system.h"
 #include "esp_mac.h"
+#include "esp_ota_ops.h"
 #include "lwip/ip4_addr.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 /* Default AP subnet shown in UI */
 #define AP_IP_ADDR "192.168.4.1"
@@ -169,6 +172,17 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "document.addEventListener('focusout',updateBadge);"
         "updateBadge();"
         "setInterval(function(){updateBadge();if(document.hidden)return;if(userIsEditing())return;var now=new Date().getTime();if(now-lastReload<periodMs-50)return;lastReload=now;window.location.reload();},periodMs);"
+        "window.startOtaUpload=function(){"
+        "var fileInput=document.getElementById('otaFile');"
+        "var statusEl=document.getElementById('otaStatus');"
+        "if(!fileInput||!fileInput.files||!fileInput.files.length){statusEl.textContent='Select a firmware .bin file first.';return;}"
+        "var file=fileInput.files[0];"
+        "statusEl.textContent='Uploading '+file.name+' ('+file.size+' bytes)...';"
+        "fetch('/ota',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-OTA-Filename':file.name},body:file})"
+        ".then(function(resp){return resp.text().then(function(text){return {ok:resp.ok,text:text};});})"
+        ".then(function(result){if(result.ok){statusEl.textContent='Upload complete. Device will reboot shortly.';}else{statusEl.textContent='OTA failed: '+result.text;}})"
+        ".catch(function(err){statusEl.textContent='OTA failed: '+err;});"
+        "};"
         "})();</script>"
         "<style>body{font-family:sans-serif;margin:20px;}table{border-collapse:collapse;}th,td{border:1px solid #ccc;padding:6px 10px;}input{padding:6px;margin:4px 0;}</style>"
         "</head><body>"
@@ -181,7 +195,12 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<form method='POST' action='/set'>SSID:<br><input name='ssid' maxlength='32' value='%s'><br>"
         "Password:<br><input name='pass' maxlength='64' value='%s'><br>"
         "<small>Empty password = open network. WPA2 requires ≥8 chars.</small><br><br>"
-        "<input type='submit' value='Save & Restart AP'></form><hr>",
+        "<input type='submit' value='Save & Restart AP'></form><hr>"
+        "<h3>OTA Firmware Update</h3>"
+        "<p>Select a firmware <code>.bin</code> file built for this device. The device will reboot after upload.</p>"
+        "<input type='file' id='otaFile' accept='.bin'><br>"
+        "<button type='button' onclick='startOtaUpload()'>Upload & Update</button>"
+        "<div id='otaStatus' style='margin-top:8px;color:#444;'></div><hr>",
         PAGE_REFRESH_SEC,
         IP2STR(&ppp_ip), IP2STR(&ppp_gw), IP2STR(&ppp_nm),
         ssid ? ssid : "", pass ? pass : ""
@@ -277,6 +296,63 @@ static esp_err_t set_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t ota_post_handler(httpd_req_t *req)
+{
+    if (req->content_len == 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty OTA image");
+        return ESP_FAIL;
+    }
+
+    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
+    if (!update_partition) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No OTA partition");
+        return ESP_FAIL;
+    }
+
+    esp_ota_handle_t ota_handle = 0;
+    esp_err_t err = esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, &ota_handle);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA begin failed");
+        return ESP_FAIL;
+    }
+
+    size_t remaining = req->content_len;
+    char buf[1024];
+    while (remaining > 0) {
+        int recv_len = httpd_req_recv(req, buf, remaining > sizeof(buf) ? sizeof(buf) : remaining);
+        if (recv_len <= 0) {
+            esp_ota_abort(ota_handle);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA receive failed");
+            return ESP_FAIL;
+        }
+
+        err = esp_ota_write(ota_handle, buf, recv_len);
+        if (err != ESP_OK) {
+            esp_ota_abort(ota_handle);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA write failed");
+            return ESP_FAIL;
+        }
+        remaining -= recv_len;
+    }
+
+    err = esp_ota_end(ota_handle);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA end failed");
+        return ESP_FAIL;
+    }
+
+    err = esp_ota_set_boot_partition(update_partition);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA set boot partition failed");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_sendstr(req, "OK");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+    return ESP_OK;
+}
+
 /* --------------------------------------------------------------------------
  * Server start
  * -------------------------------------------------------------------------- */
@@ -311,6 +387,13 @@ void web_server_start(void)
     };
     httpd_register_uri_handler(s_httpd, &set);
 
+    httpd_uri_t ota = {
+        .uri      = "/ota",
+        .method   = HTTP_POST,
+        .handler  = ota_post_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(s_httpd, &ota);
+
     ESP_LOGI(TAG, "Webserver started on http://%s/", AP_IP_ADDR);
 }
-
