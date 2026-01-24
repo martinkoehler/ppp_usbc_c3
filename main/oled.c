@@ -53,6 +53,14 @@ static int get_connected_client_count(void)
     return sta_list.num;
 }
 
+static char get_obk_connected_marker(void)
+{
+    int state = mqtt_broker_get_obk_connected_state();
+    if (state > 0) return '+';
+    if (state == 0) return '-';
+    return 0;
+}
+
 // Hilfsfunktion: sichere Grenzen für die Animation berechnen
 static void ss_init_bounds(void) {
     // verwende den Bereich innerhalb deines Offsets und der width/height
@@ -66,7 +74,12 @@ static void ss_init_bounds(void) {
 
 static void draw_screensaver(u8g2_t *u8g2) {
     char buf[16];
-    snprintf(buf, sizeof(buf), "%d", get_connected_client_count());
+    char marker = get_obk_connected_marker();
+    if (marker) {
+        snprintf(buf, sizeof(buf), "%d%c", get_connected_client_count(), marker);
+    } else {
+        snprintf(buf, sizeof(buf), "%d", get_connected_client_count());
+    }
 
     u8g2_SetFont(u8g2, u8g2_font_6x10_tr);
     int text_w = u8g2_GetStrWidth(u8g2, buf);
@@ -146,7 +159,14 @@ static void handle_oled(void)
 
     u8g2_ClearBuffer(&u8g2);
     u8g2_SetFont(&u8g2, u8g2_font_6x10_tr);
-    u8g2_DrawStr(&u8g2, xoff + 0, yoff + 15, "Power (W)"); // Koordinaten an kleine Höhe anpassen
+    char title[20];
+    char marker = get_obk_connected_marker();
+    if (marker) {
+        snprintf(title, sizeof(title), "Power (W) %c", marker);
+    } else {
+        snprintf(title, sizeof(title), "Power (W)");
+    }
+    u8g2_DrawStr(&u8g2, xoff + 0, yoff + 15, title); // Koordinaten an kleine Höhe anpassen
     u8g2_SetFont(&u8g2, u8g2_font_9x15_tr);
     char buffer[32];
     snprintf(buffer, sizeof(buffer), "%s", power_copy);

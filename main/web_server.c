@@ -124,9 +124,21 @@ static void append_mqtt_panel(char *out, size_t out_len)
     char power_copy[64];
     mqtt_broker_get_obk_power(power_copy, sizeof(power_copy));
 
+    const char *conn_label = "<span style='color:gray;'>UNKNOWN</span>";
+    int conn_state = mqtt_broker_get_obk_connected_state();
+    if (conn_state > 0) {
+        conn_label = "<span style='color:green;'>OBK ONLINE</span>";
+    } else if (conn_state == 0) {
+        conn_label = "<span style='color:red;'>OBK OFFLINE</span>";
+    }
+
     snprintf(line, sizeof(line),
              "<p><b>Latest %s:</b> <code>%s</code></p>",
              OBK_POWER_TOPIC, power_copy);
+    strlcat(out, line, out_len);
+
+    snprintf(line, sizeof(line),
+             "<p><b>OBK connected:</b> %s</p>", conn_label);
     strlcat(out, line, out_len);
 
     strlcat(out, "<p><b>Connect from WiFi AP clients:</b><br>", out_len);

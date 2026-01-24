@@ -86,8 +86,14 @@ PPP IP is configured in the options.usb-esp32 file; the web UI shows the current
 The built-in broker listens on port `1883` and exposes OBK telemetry:
 
 - Power payload topic: `obk_wr/power/get`
+- Connection state topic: `obk_wr/connected` with payload `online` or `offline`
 
-The OLED and web UI show the latest power value.
+The OLED and web UI show the latest power value. The OLED indicates connection
+state with a `+` (online) or `-` (offline) and the web UI shows it in the MQTT
+status panel (auto-refreshed via AJAX).
+
+An internal subscriber (ESP-MQTT component) listens to these topics locally to
+ensure LWT updates are reflected without patching the broker.
 
 ## OLED Display
 

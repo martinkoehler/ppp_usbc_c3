@@ -47,8 +47,12 @@ extern "C" {
 /** Port the embedded Mosquitto broker listens on. */
 #define MQTT_BROKER_PORT 1883
 
+/** OBK base topic prefix. */
+#define OBK_TOPIC_PREFIX "obk_wr"
 /** OBK topic whose payload is displayed on OLED / web UI. */
-#define OBK_POWER_TOPIC "obk_wr/power/get"
+#define OBK_POWER_TOPIC OBK_TOPIC_PREFIX "/power/get"
+/** OBK topic indicating the power-source device connection state. */
+#define OBK_CONNECTED_TOPIC OBK_TOPIC_PREFIX "/connected"
 /** Treat power telemetry as stale after this many milliseconds without updates. */
 #define OBK_POWER_STALE_TIMEOUT_MS 30000
 
@@ -72,6 +76,13 @@ bool mqtt_broker_is_running(void);
  * @param out_len Size of destination buffer
  */
 void mqtt_broker_get_obk_power(char *out, size_t out_len);
+
+/**
+ * @brief Get last known OBK connection state.
+ *
+ * @return 1 for online, 0 for offline, -1 for unknown/not yet received.
+ */
+int mqtt_broker_get_obk_connected_state(void);
 
 /**
  * @brief Initialize storage / mutex for telemetry.
