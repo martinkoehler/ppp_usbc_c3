@@ -99,12 +99,16 @@ ensure LWT updates are reflected without patching the broker.
 
 Normal view shows the power value. A screensaver starts after ~60 seconds of
 idle (power <= 0), dims the display, and bounces the connected-client count.
+If the AP is restarted by the watchdog, the OLED is blanked for ~2 seconds and
+the screensaver is reset.
 
 
 ## Watchdog
 
 A task watchdog periodically pings connected SoftAP clients. If a client stops
 responding, the AP is restarted automatically.
+The watchdog is suppressed when OBK reports `online` (and also when the state
+is unknown), and it does not trigger when no clients are connected.
 
 ## Partition Table / OTA Requirements
 

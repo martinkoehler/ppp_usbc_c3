@@ -37,6 +37,8 @@
 #include "watchdog.h"
 #include <string.h>
 #include "ap_config.h"
+#include "oled.h"
+#include "mqtt_broker.h"
 #include "esp_mac.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -51,7 +53,7 @@
 
 static const char *TAG = "watchdog";
 static TaskHandle_t watchdog_task_handle = NULL;
-static uint32_t feed_period_ms = 5000; // Default feed period
+static uint32_t feed_period_ms = 10000; // Default feed period
 #define AP_MAX_CONN 4
 
 typedef struct {
@@ -170,8 +172,13 @@ static void watchdog_task(void *arg)
     ESP_LOGI(TAG, "Watchdog task started");
     while (1) {
         esp_task_wdt_reset();
+        if (mqtt_broker_get_obk_connected_state() != 0) {
+            vTaskDelay(pdMS_TO_TICKS(feed_period_ms));
+            continue;
+        }
         if (!ping_connected_clients()) {
             ESP_LOGW(TAG, "Ping watchdog triggered, restarting AP");
+            oled_blank_and_reset_screensaver();
             ap_restart();
         }
         vTaskDelay(pdMS_TO_TICKS(feed_period_ms));

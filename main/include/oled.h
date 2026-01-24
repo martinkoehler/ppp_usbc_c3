@@ -26,8 +26,8 @@ extern "C" {
  */
 
 void oled_start(void);
+void oled_blank_and_reset_screensaver(void);
 
 #ifdef __cplusplus
 }
 #endif
-

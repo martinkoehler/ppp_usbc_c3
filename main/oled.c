@@ -43,6 +43,7 @@ static const uint8_t CONTRAST = 125;   // 0..255 (für kleines Display niedrig h
 static const uint8_t DIM_CONTRAST = 12;   // 0..255 (für kleines Display niedrig halten)
 static int ss_x, ss_y, ss_dx = 1, ss_dy = 1;
 static int normal_jitter_phase = 0;
+static int blank_seconds = 0;
 
 static int get_connected_client_count(void)
 {
@@ -122,6 +123,15 @@ static void handle_oled(void)
     char power_copy[30];
     mqtt_broker_get_obk_power(power_copy, sizeof(power_copy));
     float p = parse_power(power_copy);
+
+    if (blank_seconds > 0) {
+        blank_seconds--;
+        u8g2_SetPowerSave(&u8g2, 0);
+        u8g2_SetContrast(&u8g2, CONTRAST);
+        u8g2_ClearBuffer(&u8g2);
+        u8g2_SendBuffer(&u8g2);
+        return;
+    }
 
     if (p <= 0.0001f) {
         idle_seconds++;
@@ -212,4 +222,12 @@ void oled_start(void)
              width, height, xOffset, yOffset);
 
     xTaskCreate(oled_task, "oled_task", 4096, NULL, 5, NULL);
+}
+
+void oled_blank_and_reset_screensaver(void)
+{
+    screensaver = false;
+    idle_seconds = 0;
+    normal_jitter_phase = 0;
+    blank_seconds = 2;
 }
