@@ -2,6 +2,7 @@
 ESP32C3 as AP with PPP connection via USB-C and local mqtt_broker
 
 The ESP32-C3 opens a WLAN Access point where clients can connect to and access the local MQTT Broker.
+It also exposes a simple status/config web UI and shows MQTT power telemetry on a small OLED.
 
 ## Usage
 The ESP32 is connected to the host via USB. The "endpoint" on the host is usually something like /dev/ttyACM0.
@@ -76,8 +77,28 @@ wget --method=POST \
 - SoftAP IP: `192.168.4.1`
 - SoftAP channel: `1`
 - SoftAP max clients: `4`
+- MQTT broker port: `1883`
 
-PPP IP is negotiated by the host; the web UI shows the current PPP IP/GW/NM when connected.
+PPP IP is configured in the options.usb-esp32 file; the web UI shows the current PPP IP/GW/NM when connected.
+
+## MQTT Topics (OBK)
+
+The built-in broker listens on port `1883` and exposes OBK telemetry:
+
+- Power payload topic: `obk_wr/power/get`
+
+The OLED and web UI show the latest power value.
+
+## OLED Display
+
+Normal view shows the power value. A screensaver starts after ~60 seconds of
+idle (power <= 0), dims the display, and bounces the connected-client count.
+
+
+## Watchdog
+
+A task watchdog periodically pings connected SoftAP clients. If a client stops
+responding, the AP is restarted automatically.
 
 ## Partition Table / OTA Requirements
 
