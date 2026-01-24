@@ -213,6 +213,12 @@ esp_err_t ap_set_credentials_and_restart(const char *ssid, const char *pass)
     return ESP_OK;
 }
 
+esp_err_t ap_restart(void)
+{
+    apply_ap_config_and_restart();
+    return ESP_OK;
+}
+
 /* =========================================================================
  * Main entry point
  * ========================================================================= */
@@ -237,4 +243,3 @@ void app_main(void)
      * watchdog loop runs in its own task.
      * PPP reconnect is handled inside ppp.c. */
 }
-

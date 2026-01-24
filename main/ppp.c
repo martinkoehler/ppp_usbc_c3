@@ -96,6 +96,9 @@ static void ppp_status_cb(ppp_pcb *pcb, int err_code, void *ctx)
             ESP_LOGI(TAG, "PPP GW: " IPSTR, IP2STR(&gw));
             ESP_LOGI(TAG, "PPP NM: " IPSTR, IP2STR(&nm));
 
+            /* Re-assert PPP as the default route after link-up. */
+            // pppapi_set_default(ppp);
+
             s_ppp_up = true;
             xEventGroupSetBits(s_event_group, PPP_CONNECTED_BIT);
             break;
@@ -206,4 +209,3 @@ ip4_addr_t ppp_get_ip(void)
     }
     return ip;
 }
-

@@ -45,7 +45,13 @@ esp_netif_t *ap_get_netif(void);
  */
 esp_err_t ap_set_credentials_and_restart(const char *ssid, const char *pass);
 
+/**
+ * @brief Restart AP using current in-memory credentials.
+ *
+ * @return ESP_OK on success
+ */
+esp_err_t ap_restart(void);
+
 #ifdef __cplusplus
 }
 #endif
-

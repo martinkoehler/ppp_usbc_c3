@@ -19,7 +19,7 @@ extern "C" {
  *
  * Responsibilities:
  *  - Start httpd on AP interface
- *  - Provide "/" status page with auto-refresh
+ *  - Provide "/" status page
  *  - Provide "/set" POST handler to change AP SSID/pass
  */
 
@@ -28,4 +28,3 @@ void web_server_start(void);
 #ifdef __cplusplus
 }
 #endif
-

@@ -29,7 +29,7 @@
 
 /* Default AP subnet shown in UI */
 #define AP_IP_ADDR "192.168.4.1"
-#define PAGE_REFRESH_SEC 3
+#define AJAX_REFRESH_SEC 3
 #define AP_MAX_CONN 4
 
 static const char *TAG = "web_server";
@@ -76,12 +76,23 @@ static void append_station_table(char *out, size_t out_len)
                  "<tr><th>#</th><th>MAC</th><th>IP (DHCP)</th></tr>", out_len);
 
     for (int i = 0; i < n; i++) {
-        char row[128];
-        snprintf(row, sizeof(row),
-                 "<tr><td>%d</td><td>" MACSTR "</td><td>" IPSTR "</td></tr>",
-                 i + 1,
-                 MAC2STR(pairs[i].mac),
-                 IP2STR(&pairs[i].ip));
+        char row[256];
+        if (pairs[i].ip.addr != 0) {
+            char ip_str[IP4ADDR_STRLEN_MAX];
+            esp_ip4addr_ntoa(&pairs[i].ip, ip_str, sizeof(ip_str));
+            snprintf(row, sizeof(row),
+                     "<tr><td>%d</td><td>" MACSTR "</td><td><a href='http://%s' target='_blank' rel='noopener'>%s</a></td></tr>",
+                     i + 1,
+                     MAC2STR(pairs[i].mac),
+                     ip_str,
+                     ip_str);
+        } else {
+            snprintf(row, sizeof(row),
+                     "<tr><td>%d</td><td>" MACSTR "</td><td>" IPSTR "</td></tr>",
+                     i + 1,
+                     MAC2STR(pairs[i].mac),
+                     IP2STR(&pairs[i].ip));
+        }
         strlcat(out, row, out_len);
     }
 
@@ -159,20 +170,13 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         "<title>ESP32C3 PPP Router</title>"
-        "<script>(function(){var periodSec=%d;var periodMs=periodSec*1000;var otaInProgress=false;"
-        "var lastReload=new Date().getTime();"
-        "function badgeEl(){return document.getElementById('refreshBadge');}"
-        "function userIsEditing(){var ae=document.activeElement;if(!ae)return false;var tag=ae.tagName;return(tag==='INPUT'||tag==='TEXTAREA');}"
-        "function setBadge(text,bg){var b=badgeEl();if(!b)return;b.textContent=text;if(bg)b.style.background=bg;}"
-        "function updateBadge(){if(otaInProgress){setBadge('Auto-refresh: Paused (OTA upload)','#c6d8f5');}"
-        "else if(document.hidden){setBadge('Auto-refresh: Paused (tab hidden)','#f5e6a7');}"
-        "else if(userIsEditing()){setBadge('Auto-refresh: Paused while editing','#f5c6c6');}"
-        "else{setBadge('Auto-refresh: ON ('+periodSec+'s)','#d5f5d5');}}"
-        "document.addEventListener('visibilitychange',updateBadge);"
-        "document.addEventListener('focusin',updateBadge);"
-        "document.addEventListener('focusout',updateBadge);"
-        "updateBadge();"
-        "setInterval(function(){updateBadge();if(otaInProgress)return;if(document.hidden)return;if(userIsEditing())return;var now=new Date().getTime();if(now-lastReload<periodMs-50)return;lastReload=now;window.location.reload();},periodMs);"
+        "<script>(function(){var refreshMs=%d*1000;var otaInProgress=false;"
+        "function refreshPanels(){"
+        "fetch('/status/mqtt').then(function(resp){return resp.text();}).then(function(html){var el=document.getElementById('mqttPanel');if(el)el.innerHTML=html;});"
+        "fetch('/status/clients').then(function(resp){return resp.text();}).then(function(html){var el=document.getElementById('clientPanel');if(el)el.innerHTML=html;});"
+        "}"
+        "refreshPanels();"
+        "setInterval(refreshPanels, refreshMs);"
         "window.startOtaUpload=function(){"
         "var fileInput=document.getElementById('otaFile');"
         "var statusEl=document.getElementById('otaStatus');"
@@ -189,8 +193,6 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<style>body{font-family:sans-serif;margin:20px;}table{border-collapse:collapse;}th,td{border:1px solid #ccc;padding:6px 10px;}input{padding:6px;margin:4px 0;}</style>"
         "</head><body>"
         "<h2>ESP32-C3 PPP-over-USB + SoftAP Router (no NAT)</h2>"
-        "<div id='refreshBadge' style='position:fixed;top:10px;right:10px;background:#eee;border:1px solid #ccc;"
-        "padding:6px 10px;border-radius:8px;font-size:12px;opacity:0.9;z-index:9999;'>Auto-refresh: …</div>"
         "<h3>PPP Link</h3>"
         "<p><b>PPP IP:</b> " IPSTR "<br><b>PPP GW:</b> " IPSTR "<br><b>PPP Netmask:</b> " IPSTR "</p><hr>"
         "<h3>Change AP SSID / Password</h3>"
@@ -203,19 +205,53 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<input type='file' id='otaFile' accept='.bin'><br>"
         "<button type='button' onclick='startOtaUpload()'>Upload & Update</button>"
         "<div id='otaStatus' style='margin-top:8px;color:#444;'></div><hr>",
-        PAGE_REFRESH_SEC,
+        AJAX_REFRESH_SEC,
         IP2STR(&ppp_ip), IP2STR(&ppp_gw), IP2STR(&ppp_nm),
         ssid ? ssid : "", pass ? pass : ""
     );
 
+    strlcat(page, "<div id='mqttPanel'>", page_len);
     append_mqtt_panel(page, page_len);
-    strlcat(page, "<hr>", page_len);
+    strlcat(page, "</div><hr><div id='clientPanel'>", page_len);
     append_station_table(page, page_len);
+    strlcat(page, "</div>", page_len);
     strlcat(page, "</body></html>", page_len);
 
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, page, HTTPD_RESP_USE_STRLEN);
 
+    free(page);
+    return ESP_OK;
+}
+
+static esp_err_t mqtt_status_get_handler(httpd_req_t *req)
+{
+    const size_t page_len = 2048;
+    char *page = (char *)malloc(page_len);
+    if (!page) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+    page[0] = 0;
+    append_mqtt_panel(page, page_len);
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, page, HTTPD_RESP_USE_STRLEN);
+    free(page);
+    return ESP_OK;
+}
+
+static esp_err_t clients_status_get_handler(httpd_req_t *req)
+{
+    const size_t page_len = 2048;
+    char *page = (char *)malloc(page_len);
+    if (!page) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+    page[0] = 0;
+    append_station_table(page, page_len);
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, page, HTTPD_RESP_USE_STRLEN);
     free(page);
     return ESP_OK;
 }
@@ -396,6 +432,22 @@ void web_server_start(void)
         .user_ctx = NULL
     };
     httpd_register_uri_handler(s_httpd, &ota);
+
+    httpd_uri_t mqtt_status = {
+        .uri      = "/status/mqtt",
+        .method   = HTTP_GET,
+        .handler  = mqtt_status_get_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(s_httpd, &mqtt_status);
+
+    httpd_uri_t clients_status = {
+        .uri      = "/status/clients",
+        .method   = HTTP_GET,
+        .handler  = clients_status_get_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(s_httpd, &clients_status);
 
     ESP_LOGI(TAG, "Webserver started on http://%s/", AP_IP_ADDR);
 }
