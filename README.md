@@ -31,9 +31,68 @@ sudo ip route add 192.168.4.0/24 via 192.168.178.50 dev ppp0
 ```
 
 You can now access the ESP32 Webserver via http://192.168.178.50 in order to configure the SSID and password.
-After "Save & Reboot" clients can connect to the ESP32 using this data.
+After "Save & Restart AP" clients can connect to the ESP32 using this data.
 
 The Webserver shows the IP of connected client. Due to the `route add` command, these clients can be reached directly from the host (e.g. http://192.168.4.3)
+
+## Web UI & OTA Update
+
+The device runs a web UI for status, SSID/password config, and OTA updates.
+
+- Web UI (PPP side): http://192.168.178.50
+- Web UI (SoftAP side): http://192.168.4.1
+
+### OTA via Web UI
+Open the web UI, select the `.bin` firmware, and click **Upload & Update**.
+The device will reboot after a successful upload.
+
+### OTA via wget (headless)
+Build the firmware first (`idf.py build`). The default output is typically:
+
+```
+build/ppp_usb_c3.bin
+```
+
+Then upload it:
+
+```sh
+wget --method=POST \
+  --header="Content-Type: application/octet-stream" \
+  --header="X-OTA-Filename: ppp_usb_c3.bin" \
+  --body-file=build/ppp_usb_c3.bin \
+  http://192.168.178.50/ota -O -
+```
+
+## Prerequisites
+
+- ESP-IDF installed and set up in your shell.
+- A Linux host with `pppd` available (package name is often `ppp`).
+- USB connection to the ESP32-C3 (usually enumerates as `/dev/ttyACM0`).
+
+## Defaults
+
+- SoftAP SSID: `ESP32C3-PPP-AP`
+- SoftAP password: `12345678`
+- SoftAP IP: `192.168.4.1`
+- SoftAP channel: `1`
+- SoftAP max clients: `4`
+
+PPP IP is negotiated by the host; the web UI shows the current PPP IP/GW/NM when connected.
+
+## Partition Table / OTA Requirements
+
+OTA updates rely on the dual-app partition layout in `partitions.csv`:
+
+- `otadata` for OTA selection
+- `ota_0` and `ota_1` app slots
+
+If you change the partition table, keep these entries (or adjust OTA logic accordingly), otherwise OTA updates will fail.
+
+## Troubleshooting
+
+- `pppd` fails to open `/dev/ttyACM0`: ensure your user is in the `dialout` group or run with `sudo`.
+- No access to `192.168.4.x` clients from the host: confirm the `ip route add 192.168.4.0/24 ...` step.
+- PPP interface name differs from `ppp0`: check `ip a` and update the route command to match.
 
 ## Routing
 
