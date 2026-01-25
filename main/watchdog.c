@@ -39,6 +39,7 @@
 #include "ap_config.h"
 #include "oled.h"
 #include "mqtt_broker.h"
+#include "web_server.h"
 #include "esp_mac.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -54,6 +55,7 @@
 static const char *TAG = "watchdog";
 static TaskHandle_t watchdog_task_handle = NULL;
 static uint32_t feed_period_ms = 10000; // Default feed period
+#define WEB_HEALTH_FAIL_LIMIT 3
 #define AP_MAX_CONN 4
 
 typedef struct {
@@ -170,16 +172,27 @@ static bool ping_connected_clients(void)
 static void watchdog_task(void *arg)
 {
     ESP_LOGI(TAG, "Watchdog task started");
+    int web_fail_count = 0;
     while (1) {
         esp_task_wdt_reset();
-        if (mqtt_broker_get_obk_connected_state() != 0) {
-            vTaskDelay(pdMS_TO_TICKS(feed_period_ms));
-            continue;
+        if (web_server_is_ota_in_progress()) {
+            web_fail_count = 0;
+        } else if (!web_server_health_check()) {
+            web_fail_count++;
+            if (web_fail_count >= WEB_HEALTH_FAIL_LIMIT) {
+                ESP_LOGW(TAG, "Webserver health check failed, restarting webserver");
+                web_server_restart();
+                web_fail_count = 0;
+            }
+        } else {
+            web_fail_count = 0;
         }
-        if (!ping_connected_clients()) {
-            ESP_LOGW(TAG, "Ping watchdog triggered, restarting AP");
-            oled_blank_and_reset_screensaver();
-            ap_restart();
+        if (mqtt_broker_get_obk_connected_state() == 0) {
+            if (!ping_connected_clients()) {
+                ESP_LOGW(TAG, "Ping watchdog triggered, restarting AP");
+                oled_blank_and_reset_screensaver();
+                ap_restart();
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(feed_period_ms));
     }

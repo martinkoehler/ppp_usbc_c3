@@ -64,6 +64,9 @@ wget --method=POST \
   http://192.168.178.50/ota -O -
 ```
 
+Note: OTA uploads are most reliable over the SoftAP connection. If PPP OTA stalls,
+use the SoftAP address (`http://192.168.4.1/ota`) instead.
+
 ## Prerequisites
 
 - ESP-IDF installed and set up in your shell.
@@ -102,6 +105,9 @@ idle (power <= 0), dims the display, and bounces the connected-client count.
 If the AP is restarted by the watchdog, the OLED is blanked for ~2 seconds and
 the screensaver is reset.
 
+Press the BOOT button (GPIO9) to toggle the debug screen. The debug screen shows
+web server status, last HTTP error code (if any), MQTT/AP state, and OTA progress.
+
 
 ## Watchdog
 
@@ -109,6 +115,7 @@ A task watchdog periodically pings connected SoftAP clients. If a client stops
 responding, the AP is restarted automatically.
 The watchdog is suppressed when OBK reports `online` (and also when the state
 is unknown), and it does not trigger when no clients are connected.
+The watchdog ignores web-server health failures during OTA uploads.
 
 ## Partition Table / OTA Requirements
 
