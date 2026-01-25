@@ -1,0 +1,81 @@
+# Global variables
+PPP_CONF="/var/media/ftp/Verbatim-STORENGO-01/driver/pppd.conf"
+ROUTE_NET="192.168.4.0/24"
+ROUTE_GW="192.168.178.50"
+PING_IP="192.168.4.1"
+MIN_RESTART_INTERVAL=20
+LAST_RESTART=0
+
+# Start PPPD once at boot
+pppd /dev/ttyACM0 file "$PPP_CONF"
+sleep 10
+
+# Add route (harmless if ppp0 not ready yet)
+ip route add "$ROUTE_NET" via "$ROUTE_GW" dev ppp0 2>/dev/null
+
+# Start MQTT logger
+cd /var/media/ftp/Verbatim-STORENGO-01 && MQTT_BROKER='192.168.178.50' mqtt_to_sqlite &
+
+###############################################################################
+# Background event-driven PPP + device monitor
+###############################################################################
+(
+restart_pppd() {
+    NOW=$(date +%s)
+    if [ $((NOW - LAST_RESTART)) -lt $MIN_RESTART_INTERVAL ]; then
+        return
+    fi
+    LAST_RESTART=$NOW
+
+    killall pppd 2>/dev/null
+    sleep 2
+    pppd /dev/ttyACM0 file "$PPP_CONF"
+    sleep 8
+    ip route add "$ROUTE_NET" via "$ROUTE_GW" dev ppp0 2>/dev/null
+}
+
+# Monitor ppp0 link + routing events
+ip monitor link route | while read EVENT; do
+    case "$EVENT" in
+        *ppp0*DELETED*|*ppp0*removed*)
+            restart_pppd
+            ;;
+        *ppp0*state*DOWN*)
+            restart_pppd
+            ;;
+        *ppp0*state*UP*)
+            ip route add "$ROUTE_NET" via "$ROUTE_GW" dev ppp0 2>/dev/null
+            ;;
+    esac
+done &
+
+# Monitor /dev/ttyACM0 hotplug events
+udevadm monitor --udev --subsystem-match=tty | while read LINE; do
+    case "$LINE" in
+        *add*ttyACM0*)
+            restart_pppd
+            ;;
+        *remove*ttyACM0*)
+            killall pppd 2>/dev/null
+            ;;
+    esac
+done &
+)&
+###############################################################################
+
+
+
+
+
+#pppd call pppd-wemos
+#pppd /dev/ttyACM0 file /var/media/ftp/Verbatim-STORENGO-01/driver/pppd.conf
+#sleep 10
+#ip route add 192.168.4.0/24 via 192.168.178.50 dev ppp0
+#sleep 5
+#cd /var/media/ftp/Verbatim-STORENGO-01 && MQTT_BROKER='192.168.178.50' mqtt_to_sqlite &
+
+# Setup routing
+#for i in all default lan ppp0; do
+#  echo 0 > /proc/sys/net/ipv4/conf/$i/rp_filter
+#done
+
