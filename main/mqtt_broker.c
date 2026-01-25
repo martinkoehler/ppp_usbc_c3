@@ -60,7 +60,6 @@ static int8_t g_obk_connected_state = -1;
 static char s_in_topic[64];
 static char s_in_payload[64];
 static size_t s_in_len = 0;
-static size_t s_in_total = 0;
 
 static void trim_whitespace(char *s)
 {
@@ -145,7 +144,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 memcpy(s_in_topic, event->topic, tlen);
                 s_in_topic[tlen] = 0;
                 s_in_len = 0;
-                s_in_total = (size_t)event->total_data_len;
             }
 
             size_t copy = (size_t)event->data_len;

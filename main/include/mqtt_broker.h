@@ -31,12 +31,12 @@ extern "C" {
 
 /**
  * @file mqtt_broker.h
- * @brief Embedded Mosquitto broker lifecycle + OBK power telemetry storage.
+ * @brief Embedded Mosquitto broker lifecycle + OBK telemetry storage.
  *
  * Responsibilities:
  *  - Start Mosquitto broker on local AP / PPP interfaces.
  *  - Track broker running status.
- *  - Capture latest payload for OBK_POWER_TOPIC in a thread-safe way.
+ *  - Capture latest payload for OBK topics via the local MQTT client subscriber.
  *
  * Used by:
  *  - OLED module (display power)
