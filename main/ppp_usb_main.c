@@ -43,7 +43,9 @@
 #define AP_MAX_CONN         4
 #define AP_MIN_CHANNEL      1
 #define AP_MAX_CHANNEL      11
-#define AP_COUNTRY_CODE     "DE"
+#define AP_COUNTRY_CODE     "US"
+#define AP_COUNTRY_SCHAN    1
+#define AP_COUNTRY_NCHAN    11
 #define AP_MAX_TX_POWER_QDBM 80
 
 #define AP_IP_ADDR     "192.168.4.1"
@@ -151,7 +153,14 @@ static esp_err_t save_ap_config_to_nvs(const char *ssid, const char *pass, uint8
 
 static esp_err_t apply_softap_runtime_settings(void)
 {
-    esp_err_t err = esp_wifi_set_country_code(AP_COUNTRY_CODE, false);
+    wifi_country_t country = {
+        .cc = AP_COUNTRY_CODE,
+        .schan = AP_COUNTRY_SCHAN,
+        .nchan = AP_COUNTRY_NCHAN,
+        .policy = WIFI_COUNTRY_POLICY_MANUAL,
+    };
+
+    esp_err_t err = esp_wifi_set_country(&country);
     if (err != ESP_OK) {
         return err;
     }
