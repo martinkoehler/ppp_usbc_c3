@@ -31,7 +31,7 @@ sudo pppd /dev/ttyACM0 file ./options.usb-esp32 nodetach
 sudo ip route add 192.168.4.0/24 via 192.168.178.50 dev ppp0
 ```
 
-You can now access the ESP32 Webserver via http://192.168.178.50 in order to configure the SSID and password.
+You can now access the ESP32 Webserver via http://192.168.178.50 in order to configure the SSID, password, and Wi-Fi channel.
 After "Save & Restart AP" clients can connect to the ESP32 using this data.
 
 The Webserver shows the IP of connected client. Due to the `route add` command, these clients can be reached directly from the host (e.g. http://192.168.4.3)
@@ -78,7 +78,7 @@ use the SoftAP address (`http://192.168.4.1/ota`) instead.
 - SoftAP SSID: `ESP32C3-PPP-AP`
 - SoftAP password: `12345678`
 - SoftAP IP: `192.168.4.1`
-- SoftAP channel: `1`
+- SoftAP channel: `6`
 - SoftAP max clients: `4`
 - MQTT broker port: `1883`
 

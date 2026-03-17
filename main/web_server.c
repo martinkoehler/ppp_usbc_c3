@@ -34,6 +34,8 @@
 #define AP_IP_ADDR "192.168.4.1"
 #define AJAX_REFRESH_SEC 10
 #define AP_MAX_CONN 4
+#define AP_MIN_CHANNEL 1
+#define AP_MAX_CHANNEL 11
 
 static const char *TAG = "web_server";
 static httpd_handle_t s_httpd = NULL;
@@ -104,6 +106,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
 
     const char *ssid = ap_get_ssid();
     const char *pass = ap_get_pass();
+    uint8_t channel = ap_get_channel();
 
     snprintf(page, page_len,
         "<!doctype html><html><head>"
@@ -146,6 +149,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "setHtml('obkConn',conn);"
         "setText('mqttApUri',data.mqtt.ap_uri||'');"
         "setText('mqttPppUri',data.mqtt.ppp_up?data.mqtt.ppp_uri:'PPP not up yet.');"
+        "setText('apChannel',data.ap.channel||'');"
         "setText('pppIp',data.ppp.ip||'0.0.0.0');"
         "setText('pppGw',data.ppp.gw||'0.0.0.0');"
         "setText('pppNm',data.ppp.nm||'0.0.0.0');"
@@ -187,10 +191,11 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<p><b>PPP IP:</b> <span id='pppIp'>" IPSTR "</span><br>"
         "<b>PPP GW:</b> <span id='pppGw'>" IPSTR "</span><br>"
         "<b>PPP Netmask:</b> <span id='pppNm'>" IPSTR "</span></p><hr>"
-        "<h3>Change AP SSID / Password</h3>"
+        "<h3>Change AP Settings</h3>"
         "<form method='POST' action='/set'>SSID:<br><input name='ssid' maxlength='32' value='%s'><br>"
         "Password:<br><input name='pass' maxlength='64' value='%s'><br>"
-        "<small>Empty password = open network. WPA2 requires ≥8 chars.</small><br><br>"
+        "Channel:<br><input name='channel' type='number' min='1' max='11' step='1' value='%u'><br>"
+        "<small>Empty password = open network. WPA2 requires ≥8 chars. Valid Wi-Fi channels: 1 to 11.</small><br><br>"
         "<input type='submit' value='Save & Restart AP'></form><hr>"
         "<h3>OTA Firmware Update</h3>"
         "<p>Select a firmware <code>.bin</code> file built for this device. The device will reboot after upload.</p>"
@@ -204,6 +209,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<b>Free heap:</b> <span id='freeHeap'></span> bytes</p>"
         "<p><b>Latest " OBK_POWER_TOPIC ":</b> <code id='obkPower'></code></p>"
         "<p><b>OBK connected:</b> <span id='obkConn'></span></p>"
+        "<p><b>Current AP channel:</b> <span id='apChannel'>%u</span></p>"
         "<p><b>Connect from WiFi AP clients:</b><br><code id='mqttApUri'></code></p>"
         "<p><b>Connect from Linux PC over PPP:</b><br><code id='mqttPppUri'></code></p><hr>"
         "<h3>Connected Clients</h3>"
@@ -211,7 +217,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<tbody id='clientTableBody'><tr><td colspan='3'>Loading...</td></tr></tbody></table><hr>",
         AJAX_REFRESH_SEC,
         IP2STR(&ppp_ip), IP2STR(&ppp_gw), IP2STR(&ppp_nm),
-        ssid ? ssid : "", pass ? pass : ""
+        ssid ? ssid : "", pass ? pass : "", channel, channel
     );
 
     strlcat(page, "</body></html>", page_len);
@@ -275,6 +281,9 @@ static esp_err_t status_all_get_handler(httpd_req_t *req)
              "\"ppp_uri\":\"%s\","
              "\"ppp_up\":%s"
              "},"
+             "\"ap\":{"
+             "\"channel\":%u"
+             "},"
              "\"ppp\":{"
              "\"ip\":\"" IPSTR "\","
              "\"gw\":\"" IPSTR "\","
@@ -290,6 +299,7 @@ static esp_err_t status_all_get_handler(httpd_req_t *req)
              mqtt_ap_uri,
              mqtt_ppp_uri,
              ppp_up ? "true" : "false",
+             ap_get_channel(),
              IP2STR(&ppp_ip), IP2STR(&ppp_gw), IP2STR(&ppp_nm));
 
     wifi_sta_list_t sta_list = {0};
@@ -451,6 +461,29 @@ static void url_decode_inplace(char *s)
     *q = 0;
 }
 
+static bool parse_form_field(const char *buf, const char *key, char *out, size_t out_len)
+{
+    char pattern[24];
+    snprintf(pattern, sizeof(pattern), "%s=", key);
+
+    char *value = strstr(buf, pattern);
+    if (!value || out_len == 0) {
+        return false;
+    }
+
+    value += strlen(pattern);
+    char *end = strchr(value, '&');
+    size_t n = end ? (size_t)(end - value) : strlen(value);
+    if (n >= out_len) {
+        n = out_len - 1;
+    }
+
+    memcpy(out, value, n);
+    out[n] = 0;
+    url_decode_inplace(out);
+    return true;
+}
+
 static esp_err_t set_post_handler(httpd_req_t *req)
 {
     char buf[256];
@@ -463,29 +496,14 @@ static esp_err_t set_post_handler(httpd_req_t *req)
 
     char ssid[33] = {0};
     char pass[65] = {0};
+    char channel_raw[4] = {0};
 
-    char *ssid_p = strstr(buf, "ssid=");
-    char *pass_p = strstr(buf, "pass=");
+    parse_form_field(buf, "ssid", ssid, sizeof(ssid));
+    parse_form_field(buf, "pass", pass, sizeof(pass));
+    parse_form_field(buf, "channel", channel_raw, sizeof(channel_raw));
 
-    if (ssid_p) {
-        ssid_p += 5;
-        char *end = strchr(ssid_p, '&');
-        size_t n = end ? (size_t)(end - ssid_p) : strlen(ssid_p);
-        n = (n >= sizeof(ssid)) ? sizeof(ssid) - 1 : n;
-        memcpy(ssid, ssid_p, n);
-        ssid[n] = 0;
-        url_decode_inplace(ssid);
-    }
-
-    if (pass_p) {
-        pass_p += 5;
-        char *end = strchr(pass_p, '&');
-        size_t n = end ? (size_t)(end - pass_p) : strlen(pass_p);
-        n = (n >= sizeof(pass)) ? sizeof(pass) - 1 : n;
-        memcpy(pass, pass_p, n);
-        pass[n] = 0;
-        url_decode_inplace(pass);
-    }
+    char *endptr = NULL;
+    long channel = strtol(channel_raw, &endptr, 10);
 
     if (strlen(ssid) == 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "SSID must not be empty");
@@ -495,10 +513,15 @@ static esp_err_t set_post_handler(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Password must be >=8 or empty");
         return ESP_FAIL;
     }
+    if (channel_raw[0] == 0 || endptr == channel_raw || *endptr != '\0' ||
+        channel < AP_MIN_CHANNEL || channel > AP_MAX_CHANNEL) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Channel must be between 1 and 11");
+        return ESP_FAIL;
+    }
 
-    ESP_LOGI(TAG, "New AP config: SSID='%s' PASS len=%d", ssid, (int)strlen(pass));
+    ESP_LOGI(TAG, "New AP config: SSID='%s' PASS len=%d CH=%ld", ssid, (int)strlen(pass), channel);
 
-    esp_err_t err = ap_set_credentials_and_restart(ssid, pass);
+    esp_err_t err = ap_set_credentials_and_restart(ssid, pass, (uint8_t)channel);
     if (err != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS save failed");
         return ESP_FAIL;

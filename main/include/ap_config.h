@@ -9,6 +9,8 @@
  */
 #pragma once
 
+#include <stdint.h>
+
 #include "esp_err.h"
 #include "esp_netif.h"
 
@@ -33,6 +35,9 @@ const char *ap_get_ssid(void);
 /** Get current AP password string (NUL terminated). */
 const char *ap_get_pass(void);
 
+/** Get current AP channel. */
+uint8_t ap_get_channel(void);
+
 /** AP netif handle (for DHCP client lookup). */
 esp_netif_t *ap_get_netif(void);
 
@@ -41,9 +46,10 @@ esp_netif_t *ap_get_netif(void);
  *
  * @param ssid New SSID (validated already)
  * @param pass New password (empty allowed, or >=8 chars)
+ * @param channel New 2.4 GHz Wi-Fi channel
  * @return ESP_OK on success
  */
-esp_err_t ap_set_credentials_and_restart(const char *ssid, const char *pass);
+esp_err_t ap_set_credentials_and_restart(const char *ssid, const char *pass, uint8_t channel);
 
 /**
  * @brief Restart AP using current in-memory credentials.
