@@ -174,7 +174,6 @@ static esp_err_t apply_softap_runtime_settings(void)
     if (err != ESP_OK) {
         return err;
     }
-    esp_wifi_set_dtim_interval(1);
     return esp_wifi_set_max_tx_power(AP_MAX_TX_POWER_QDBM);
 }
 
@@ -204,6 +203,7 @@ static void apply_ap_config_and_restart(void)
     wifi_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
     wifi_config.ap.pmf_cfg.required = false;
     wifi_config.ap.beacon_interval = 50;
+    wifi_config.ap.dtim_period = 1;
 
     strncpy((char *)wifi_config.ap.ssid, g_ap_ssid, sizeof(wifi_config.ap.ssid));
     wifi_config.ap.ssid_len = strlen(g_ap_ssid);
@@ -255,6 +255,7 @@ static void wifi_init_softap(void)
     wifi_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
     wifi_config.ap.pmf_cfg.required = false;
     wifi_config.ap.beacon_interval = 100;
+    wifi_config.ap.dtim_period = 1;
 
     strncpy((char *)wifi_config.ap.ssid, g_ap_ssid, sizeof(wifi_config.ap.ssid));
     wifi_config.ap.ssid_len = strlen(g_ap_ssid);
