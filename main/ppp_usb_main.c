@@ -203,7 +203,7 @@ static void apply_ap_config_and_restart(void)
     wifi_config.ap.max_connection = AP_MAX_CONN;
     wifi_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
     wifi_config.ap.pmf_cfg.required = false;
-    wifi_config.ap.beacon_interval = 100;
+    wifi_config.ap.beacon_interval = 50;
 
     strncpy((char *)wifi_config.ap.ssid, g_ap_ssid, sizeof(wifi_config.ap.ssid));
     wifi_config.ap.ssid_len = strlen(g_ap_ssid);
