@@ -174,7 +174,7 @@ static esp_err_t apply_softap_runtime_settings(void)
     if (err != ESP_OK) {
         return err;
     }
-
+    esp_wifi_set_dtim_interval(1);
     return esp_wifi_set_max_tx_power(AP_MAX_TX_POWER_QDBM);
 }
 
