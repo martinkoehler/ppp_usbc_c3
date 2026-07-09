@@ -34,10 +34,10 @@
 #define OLED_RST U8G2_ESP32_HAL_UNDEFINED
 #define OLED_DEBUG_BUTTON GPIO_NUM_9
 
-static const int width   = 72;
-static const int height  = 40;
-static const int xOffset = 28;
-static const int yOffset = 18;
+static const int width   = 128;
+static const int height  = 64;
+static const int xOffset = 0;
+static const int yOffset = 0;
 static const uint8_t I2C_ADDR_8BIT = (0x3C << 1);
 
 static const char *TAG = "oled";
@@ -153,6 +153,7 @@ static void draw_screensaver(u8g2_t *u8g2) {
 
     u8g2_ClearBuffer(u8g2);
     u8g2_DrawStr(u8g2, ss_x, ss_y, buf);
+    u8g2_SetContrast(u8g2, DIM_CONTRAST);
     u8g2_SendBuffer(u8g2);
 }
 
@@ -259,9 +260,9 @@ static void draw_debug_page(void)
 
     u8g2_ClearBuffer(&u8g2);
     u8g2_SetFont(&u8g2, u8g2_font_6x10_tr);
-    u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 14, line1);
-    u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 26, line2);
-    u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 38, line3);
+    u8g2_DrawStr(&u8g2, xOffset + 28, yOffset + 14, line1);
+    u8g2_DrawStr(&u8g2, xOffset + 28, yOffset + 26, line2);
+    u8g2_DrawStr(&u8g2, xOffset + 28, yOffset + 38, line3);
     u8g2_SendBuffer(&u8g2);
 }
 
@@ -321,8 +322,8 @@ static void handle_oled(void)
 
     // Normale Anzeige mit gelegentlichem, kleinem Jitter (alle Aufrufe cycles)
     normal_jitter_phase = (normal_jitter_phase + 1) % 60; // z.B. 1 px Veränderung pro Minute
-    int xoff = xOffset;
-    int yoff = yOffset;
+    int xoff = xOffset + 28;
+    int yoff = yOffset + 12;
     if (normal_jitter_phase == 0) xoff += 1;
     else if (normal_jitter_phase == 30) xoff -= 1;
 
