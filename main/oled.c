@@ -2,6 +2,7 @@
  * PPP-over-USB + WiFi SoftAP Router (ESP32-C3)
  *
  * OLED module (u8g2 + SSD1306).
+ * Enhanced with WiFi signal strength indicator (WiFi symbol with bars).
  *
  * Author: Martin Köhler [martinkoehler]
  *
@@ -10,6 +11,7 @@
 #include "oled.h"
 #include "mqtt_broker.h"
 #include "web_server.h"
+#include "client_rssi.h"
 
 #include <stdio.h>
 
@@ -70,6 +72,57 @@ static char get_obk_connected_marker(void)
     if (state > 0) return '+';
     if (state == 0) return '-';
     return 0;
+}
+
+/* WiFi signal strength indicator (0-4 bars) */
+static uint8_t get_best_client_signal_bars(void)
+{
+    int8_t rssi = client_rssi_get_best();
+    if (rssi == INT8_MIN) {
+        return 0;  // No clients
+    }
+    return client_rssi_to_bars(rssi);
+}
+
+/* Draw WiFi symbol with bar indicator (0-4 bars) */
+static void draw_wifi_symbol(u8g2_t *u8g2, int x, int y, uint8_t bars)
+{
+    /* Draw a simple WiFi symbol:
+     * - Arc represents the WiFi icon
+     * - Bars filled based on signal strength
+     * Approximate 6x6 pixel WiFi symbol with variable fill
+     */
+    
+    if (bars == 0) {
+        /* No signal: draw empty arc outline */
+        u8g2_DrawPixel(u8g2, x + 2, y);     // dot (transmitter)
+        u8g2_DrawPixel(u8g2, x + 1, y + 1);
+        u8g2_DrawPixel(u8g2, x + 3, y + 1);
+        return;
+    }
+
+    /* Draw filled arcs for signal bars */
+    u8g2_DrawPixel(u8g2, x + 2, y);         // dot (transmitter) - always on
+
+    if (bars >= 1) {
+        u8g2_DrawPixel(u8g2, x + 1, y + 1);
+        u8g2_DrawPixel(u8g2, x + 3, y + 1);
+    }
+
+    if (bars >= 2) {
+        u8g2_DrawPixel(u8g2, x, y + 2);
+        u8g2_DrawPixel(u8g2, x + 4, y + 2);
+    }
+
+    if (bars >= 3) {
+        u8g2_DrawPixel(u8g2, x, y + 3);
+        u8g2_DrawPixel(u8g2, x + 4, y + 3);
+    }
+
+    if (bars >= 4) {
+        u8g2_DrawPixel(u8g2, x + 1, y + 4);
+        u8g2_DrawPixel(u8g2, x + 3, y + 4);
+    }
 }
 
 // Hilfsfunktion: sichere Grenzen für die Animation berechnen
@@ -229,7 +282,7 @@ static void draw_debug_page(void)
 }
 
 /**
- * @brief Renders OLED UI: solar power value, simple title.
+ * @brief Renders OLED UI: solar power value with WiFi signal strength.
  */
 
 static void handle_oled(void)
@@ -299,14 +352,31 @@ static void handle_oled(void)
     u8g2_DrawStr(&u8g2, xoff + 0, yoff + 32, buffer);
 
     u8g2_SetFont(&u8g2, u8g2_font_6x10_tr);
-    char status[16];
+    
+    /* Display client count with WiFi signal strength indicator */
+    int client_count = get_connected_client_count();
+    uint8_t signal_bars = get_best_client_signal_bars();
+    
+    u8g2_DrawStr(&u8g2, xoff + 0, yoff + 44, "Cli:");
+    
+    /* Draw client count number */
+    char count_str[4];
+    snprintf(count_str, sizeof(count_str), "%d", client_count);
+    u8g2_DrawStr(&u8g2, xoff + 20, yoff + 44, count_str);
+    
+    /* Draw WiFi signal indicator (if clients connected) */
+    if (client_count > 0) {
+        draw_wifi_symbol(&u8g2, xoff + 32, yoff + 38, signal_bars);
+    }
+    
+    /* Draw OBK connection marker if needed */
     char marker = get_obk_connected_marker();
     if (marker) {
-        snprintf(status, sizeof(status), "%d%c", get_connected_client_count(), marker);
-    } else {
-        snprintf(status, sizeof(status), "%d", get_connected_client_count());
+        char marker_str[2];
+        snprintf(marker_str, sizeof(marker_str), "%c", marker);
+        u8g2_DrawStr(&u8g2, xoff + 50, yoff + 44, marker_str);
     }
-    u8g2_DrawStr(&u8g2, xoff + 0, yoff + 44, status);
+
     u8g2_SendBuffer(&u8g2);
 }
 
