@@ -19,6 +19,7 @@
 #include "freertos/semphr.h"
 
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_wifi.h"
 
 static const char *TAG = "client_rssi";

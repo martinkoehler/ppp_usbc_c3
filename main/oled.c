@@ -357,16 +357,14 @@ static void handle_oled(void)
     int client_count = get_connected_client_count();
     uint8_t signal_bars = get_best_client_signal_bars();
     
-    u8g2_DrawStr(&u8g2, xoff + 0, yoff + 44, "Cli:");
-    
     /* Draw client count number */
     char count_str[4];
     snprintf(count_str, sizeof(count_str), "%d", client_count);
-    u8g2_DrawStr(&u8g2, xoff + 20, yoff + 44, count_str);
+    u8g2_DrawStr(&u8g2, xoff + 0, yoff + 44, count_str);
     
     /* Draw WiFi signal indicator (if clients connected) */
     if (client_count > 0) {
-        draw_wifi_symbol(&u8g2, xoff + 32, yoff + 38, signal_bars);
+        draw_wifi_symbol(&u8g2, xoff + 12, yoff + 38, signal_bars);
     }
     
     /* Draw OBK connection marker if needed */
@@ -374,7 +372,7 @@ static void handle_oled(void)
     if (marker) {
         char marker_str[2];
         snprintf(marker_str, sizeof(marker_str), "%c", marker);
-        u8g2_DrawStr(&u8g2, xoff + 50, yoff + 44, marker_str);
+        u8g2_DrawStr(&u8g2, xoff + 30, yoff + 44, marker_str);
     }
 
     u8g2_SendBuffer(&u8g2);
