@@ -100,14 +100,41 @@ ensure LWT updates are reflected without patching the broker.
 
 ## OLED Display
 
-Normal view shows the power value. A screensaver starts after ~60 seconds of
-idle (power <= 0), dims the display, and bounces the connected-client count.
-If the AP is restarted by the watchdog, the OLED is blanked for ~2 seconds and
-the screensaver is reset.
+The OLED display shows real-time power telemetry with WiFi signal strength indication.
 
-Press the BOOT button (GPIO9) to toggle the debug screen. The debug screen shows
-web server status, last HTTP error code (if any), MQTT/AP state, and OTA progress.
+### Normal View
+- **Power (W):** Displays the latest OBK power value in large digits
+- **Client Count:** Shows the number of connected WiFi clients
+- **WiFi Signal Indicator:** A WiFi symbol with 0-4 bars representing the signal strength of the strongest connected client
+  - 4 bars: Excellent signal (-30 to -50 dBm)
+  - 3 bars: Good signal (-50 to -65 dBm)
+  - 2 bars: Fair signal (-65 to -75 dBm)
+  - 1 bar: Poor signal (-75 to -85 dBm)
+  - 0 bars: Very weak signal (-85 to -120 dBm) or no clients
+- **Connection Marker:** A `+` (online) or `-` (offline) indicator for OBK connection state
 
+### Screensaver
+After ~60 seconds of idle (power ≤ 0), the display dims and shows a bouncing client count.
+If the AP is restarted by the watchdog, the OLED is blanked for ~2 seconds and the screensaver is reset.
+
+### Debug Screen
+Press the BOOT button (GPIO9) to toggle the debug screen. The debug screen shows:
+- Web server status (R=Running, S=Stopped)
+- HTTP health status (last HTTP response code)
+- OTA progress (if upload in progress)
+- MQTT and AP state
+
+## WiFi Signal Strength Tracking
+
+The system continuously monitors connected clients and their RSSI (Received Signal Strength Indicator) values:
+
+- **Per-client RSSI:** Individual RSSI values are tracked for each connected client by MAC address
+- **Best Signal:** The display shows the WiFi strength of the strongest-signal client (typically the power publisher)
+- **Average Signal:** Average RSSI across all clients is available for diagnostics
+- **Background Updates:** RSSI values are updated every 5 seconds in a dedicated task
+- **Thread-Safe Access:** All RSSI data is protected by a mutex to prevent race conditions
+
+This allows you to visually assess the WiFi link quality of connected devices directly on the OLED.
 
 ## Watchdog
 
@@ -131,6 +158,7 @@ If you change the partition table, keep these entries (or adjust OTA logic accor
 - `pppd` fails to open `/dev/ttyACM0`: ensure your user is in the `dialout` group or run with `sudo`.
 - No access to `192.168.4.x` clients from the host: confirm the `ip route add 192.168.4.0/24 ...` step.
 - PPP interface name differs from `ppp0`: check `ip a` and update the route command to match.
+- WiFi signal bars not updating: ensure the OLED is displaying and clients are actively connected.
 
 ## Routing
 
