@@ -35,6 +35,7 @@
 #include "mqtt_broker.h"
 #include "oled.h"
 #include "watchdog.h"
+#include "client_rssi.h"
 
 /* ------------------------- AP defaults ------------------------- */
 #define DEFAULT_AP_SSID     "ESP32C3-PPP-AP"
@@ -311,6 +312,7 @@ void app_main(void)
     wifi_init_softap();
 
     /* Start modules */
+    client_rssi_init();     // Initialize client RSSI tracking first
     web_server_start();
     mqtt_broker_start();
     oled_start();
