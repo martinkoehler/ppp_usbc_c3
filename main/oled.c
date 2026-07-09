@@ -2,7 +2,7 @@
  * PPP-over-USB + WiFi SoftAP Router (ESP32-C3)
  *
  * OLED module (u8g2 + SSD1306).
- * Enhanced with WiFi signal strength indicator (WiFi symbol with bars).
+ * Enhanced with WiFi signal strength indicator (horizontal RSSI bar).
  *
  * Author: Martin Köhler [martinkoehler]
  *
@@ -13,6 +13,7 @@
 #include "web_server.h"
 #include "client_rssi.h"
 
+#include <limits.h>
 #include <stdio.h>
 
 #include "freertos/FreeRTOS.h"
@@ -74,55 +75,38 @@ static char get_obk_connected_marker(void)
     return 0;
 }
 
-/* WiFi signal strength indicator (0-4 bars) */
-static uint8_t get_best_client_signal_bars(void)
+/* WiFi signal strength indicator: best connected client RSSI. */
+static int8_t get_best_client_rssi(void)
 {
-    int8_t rssi = client_rssi_get_best();
-    if (rssi == INT8_MIN) {
-        return 0;  // No clients
-    }
-    return client_rssi_to_bars(rssi);
+    return client_rssi_get_best();
 }
 
-/* Draw WiFi symbol with bar indicator (0-4 bars) */
-static void draw_wifi_symbol(u8g2_t *u8g2, int x, int y, uint8_t bars)
+/* Draw a horizontal RSSI bar with one pixel per dBm over the configured range. */
+static void draw_signal_bar(u8g2_t *u8g2, int x, int y, int8_t rssi)
 {
-    /* Draw a simple WiFi symbol:
-     * - Arc represents the WiFi icon
-     * - Bars filled based on signal strength
-     * Approximate 6x6 pixel WiFi symbol with variable fill
-     */
-    
-    if (bars == 0) {
-        /* No signal: draw empty arc outline */
-        u8g2_DrawPixel(u8g2, x + 2, y);     // dot (transmitter)
-        u8g2_DrawPixel(u8g2, x + 1, y + 1);
-        u8g2_DrawPixel(u8g2, x + 3, y + 1);
+    enum {
+        BAR_W = 58,
+        BAR_H = 6,
+        RSSI_MIN_DBM = -100,
+        RSSI_MAX_DBM = -45,
+    };
+
+    u8g2_DrawFrame(u8g2, x, y, BAR_W, BAR_H);
+
+    if (rssi == INT8_MIN) {
         return;
     }
 
-    /* Draw filled arcs for signal bars */
-    u8g2_DrawPixel(u8g2, x + 2, y);         // dot (transmitter) - always on
-
-    if (bars >= 1) {
-        u8g2_DrawPixel(u8g2, x + 1, y + 1);
-        u8g2_DrawPixel(u8g2, x + 3, y + 1);
+    if (rssi < RSSI_MIN_DBM) {
+        rssi = RSSI_MIN_DBM;
+    } else if (rssi > RSSI_MAX_DBM) {
+        rssi = RSSI_MAX_DBM;
     }
 
-    if (bars >= 2) {
-        u8g2_DrawPixel(u8g2, x, y + 2);
-        u8g2_DrawPixel(u8g2, x + 4, y + 2);
-    }
+    uint8_t fill_w = 1 + (uint16_t)(rssi - RSSI_MIN_DBM) * (BAR_W - 3) /
+                         (RSSI_MAX_DBM - RSSI_MIN_DBM);
 
-    if (bars >= 3) {
-        u8g2_DrawPixel(u8g2, x, y + 3);
-        u8g2_DrawPixel(u8g2, x + 4, y + 3);
-    }
-
-    if (bars >= 4) {
-        u8g2_DrawPixel(u8g2, x + 1, y + 4);
-        u8g2_DrawPixel(u8g2, x + 3, y + 4);
-    }
+    u8g2_DrawBox(u8g2, x + 1, y + 1, fill_w, BAR_H - 2);
 }
 
 // Hilfsfunktion: sichere Grenzen für die Animation berechnen
@@ -355,24 +339,19 @@ static void handle_oled(void)
     
     /* Display client count with WiFi signal strength indicator */
     int client_count = get_connected_client_count();
-    uint8_t signal_bars = get_best_client_signal_bars();
+    int8_t client_rssi = get_best_client_rssi();
     
     /* Draw client count number */
     char count_str[4];
     snprintf(count_str, sizeof(count_str), "%d", client_count);
     u8g2_DrawStr(&u8g2, xoff + 0, yoff + 44, count_str);
     
-    /* Draw WiFi signal indicator (if clients connected) */
-    if (client_count > 0) {
-        draw_wifi_symbol(&u8g2, xoff + 12, yoff + 38, signal_bars);
-    }
-    
-    /* Draw OBK connection marker if needed */
+    /* Draw OBK offline marker, otherwise show WiFi signal indicator. */
     char marker = get_obk_connected_marker();
-    if (marker) {
-        char marker_str[2];
-        snprintf(marker_str, sizeof(marker_str), "%c", marker);
-        u8g2_DrawStr(&u8g2, xoff + 30, yoff + 44, marker_str);
+    if (marker == '-') {
+        u8g2_DrawStr(&u8g2, xoff + 12, yoff + 44, "-");
+    } else if (client_count > 0) {
+        draw_signal_bar(&u8g2, xoff + 12, yoff + 38, client_rssi);
     }
 
     u8g2_SendBuffer(&u8g2);

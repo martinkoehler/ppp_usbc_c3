@@ -91,9 +91,10 @@ The built-in broker listens on port `1883` and exposes OBK telemetry:
 - Power payload topic: `obk_wr/power/get`
 - Connection state topic: `obk_wr/connected` with payload `online` or `offline`
 
-The OLED and web UI show the latest power value. The OLED indicates connection
-state with a `+` (online) or `-` (offline) and the web UI shows it in the MQTT
-status panel (auto-refreshed via AJAX).
+The OLED and web UI show the latest power value. The web UI shows OBK
+connection state in the MQTT status panel (auto-refreshed via AJAX). On the
+OLED, OBK offline state is shown as `-` in place of the RSSI bar; online state
+does not add a separate marker.
 
 An internal subscriber (ESP-MQTT component) listens to these topics locally to
 ensure LWT updates are reflected without patching the broker.
@@ -105,13 +106,11 @@ The OLED display shows real-time power telemetry with WiFi signal strength indic
 ### Normal View
 - **Power (W):** Displays the latest OBK power value in large digits
 - **Client Count:** Shows the number of connected WiFi clients
-- **WiFi Signal Indicator:** A WiFi symbol with 0-4 bars representing the signal strength of the strongest connected client
-  - 4 bars: Excellent signal (-30 to -50 dBm)
-  - 3 bars: Good signal (-50 to -65 dBm)
-  - 2 bars: Fair signal (-65 to -75 dBm)
-  - 1 bar: Poor signal (-75 to -85 dBm)
-  - 0 bars: Very weak signal (-85 to -120 dBm) or no clients
-- **Connection Marker:** A `+` (online) or `-` (offline) indicator for OBK connection state
+- **WiFi Signal Indicator:** A horizontal RSSI bar showing the strongest connected client
+  - The bar spans about `-100 dBm` to `-45 dBm`
+  - It has 56 fill steps, effectively one display pixel per dBm
+  - The RSSI value is refreshed every 5 seconds
+- **Connection Marker:** When OBK reports offline, `-` is shown in place of the RSSI bar. Online state does not show `+`.
 
 ### Screensaver
 After ~60 seconds of idle (power ≤ 0), the display dims and shows a bouncing client count.
@@ -129,12 +128,12 @@ Press the BOOT button (GPIO9) to toggle the debug screen. The debug screen shows
 The system continuously monitors connected clients and their RSSI (Received Signal Strength Indicator) values:
 
 - **Per-client RSSI:** Individual RSSI values are tracked for each connected client by MAC address
-- **Best Signal:** The display shows the WiFi strength of the strongest-signal client (typically the power publisher)
+- **Best Signal:** The display shows a 56-step horizontal RSSI bar for the strongest-signal client (typically the power publisher)
 - **Average Signal:** Average RSSI across all clients is available for diagnostics
 - **Background Updates:** RSSI values are updated every 5 seconds in a dedicated task
 - **Thread-Safe Access:** All RSSI data is protected by a mutex to prevent race conditions
 
-This allows you to visually assess the WiFi link quality of connected devices directly on the OLED.
+This allows you to visually assess the WiFi link quality of connected devices directly on the OLED. Move the device, wait 5-10 seconds, and compare the bar length.
 
 ## Watchdog
 
@@ -158,7 +157,7 @@ If you change the partition table, keep these entries (or adjust OTA logic accor
 - `pppd` fails to open `/dev/ttyACM0`: ensure your user is in the `dialout` group or run with `sudo`.
 - No access to `192.168.4.x` clients from the host: confirm the `ip route add 192.168.4.0/24 ...` step.
 - PPP interface name differs from `ppp0`: check `ip a` and update the route command to match.
-- WiFi signal bars not updating: ensure the OLED is displaying and clients are actively connected.
+- WiFi RSSI bar not updating: ensure the OLED is displaying and clients are actively connected.
 
 ## Routing
 
