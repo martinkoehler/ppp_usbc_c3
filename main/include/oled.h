@@ -28,6 +28,9 @@ extern "C" {
 void oled_start(void);
 void oled_blank_and_reset_screensaver(void);
 
+/** Request the same debug-page toggle as a BOOT-button press. */
+void oled_request_debug_toggle(void);
+
 #ifdef __cplusplus
 }
 #endif

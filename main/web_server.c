@@ -10,6 +10,7 @@
 #include "web_server.h"
 #include "ap_config.h"
 #include "mqtt_broker.h"
+#include "oled.h"
 #include "ppp.h"
 
 #include <string.h>
@@ -197,6 +198,9 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "Channel:<br><input name='channel' type='number' min='1' max='11' step='1' value='%u'><br>"
         "<small>Empty password = open network. WPA2 requires ≥8 chars. Valid Wi-Fi channels: 1 to 11.</small><br><br>"
         "<input type='submit' value='Save & Restart AP'></form><hr>"
+        "<h3>OLED Diagnostics</h3>"
+        "<form method='POST' action='/oled/debug'><button type='submit'>Toggle Debug Page</button></form>"
+        "<p><small>Use this control to test the display without pressing the GPIO9 BOOT button.</small></p><hr>"
         "<h3>OTA Firmware Update</h3>"
         "<p>Select a firmware <code>.bin</code> file built for this device. The device will reboot after upload.</p>"
         "<input type='file' id='otaFile' accept='.bin'><br>"
@@ -533,6 +537,15 @@ static esp_err_t set_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t oled_debug_post_handler(httpd_req_t *req)
+{
+    oled_request_debug_toggle();
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
 static esp_err_t ota_post_handler(httpd_req_t *req)
 {
     s_ota_in_progress = true;
@@ -653,6 +666,14 @@ void web_server_start(void)
         .user_ctx = NULL
     };
     httpd_register_uri_handler(s_httpd, &set);
+
+    httpd_uri_t oled_debug = {
+        .uri      = "/oled/debug",
+        .method   = HTTP_POST,
+        .handler  = oled_debug_post_handler,
+        .user_ctx = NULL
+    };
+    httpd_register_uri_handler(s_httpd, &oled_debug);
 
     httpd_uri_t ota = {
         .uri      = "/ota",

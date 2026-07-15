@@ -133,6 +133,10 @@ Press the BOOT button (GPIO9) to toggle the debug screen. The debug screen shows
 > firmware and access point are not running. Reset without BOOT held, wait for
 > the application to start, and then tap BOOT to open the debug screen.
 
+The web UI also provides **OLED Diagnostics → Toggle Debug Page**. It toggles
+the same page without operating GPIO9 and can be used to distinguish a BOOT
+button/GPIO issue from a display or power-related issue.
+
 ## WiFi Signal Strength Tracking
 
 The system continuously monitors connected clients and their RSSI (Received Signal Strength Indicator) values:

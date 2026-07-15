@@ -58,6 +58,8 @@ static int last_web_status = 0;
 static esp_err_t last_web_err = ESP_OK;
 static bool debug_mode = false;
 static bool button_armed = true;
+static bool debug_toggle_requested = false;
+static portMUX_TYPE debug_toggle_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static int get_connected_client_count(void)
 {
@@ -174,6 +176,15 @@ static void oled_button_init(void)
     gpio_config(&cfg);
 }
 
+static void toggle_debug_page(void)
+{
+    debug_mode = !debug_mode;
+    screensaver = false;
+    idle_seconds = 0;
+    blank_seconds = 0;
+    normal_jitter_phase = 0;
+}
+
 static void poll_debug_button(void)
 {
     static int last_level = 1;
@@ -190,14 +201,24 @@ static void poll_debug_button(void)
     }
 
     if (stable_count >= 2 && level == 0 && button_armed) {
-        debug_mode = !debug_mode;
+        toggle_debug_page();
         button_armed = false;
-        screensaver = false;
-        idle_seconds = 0;
-        blank_seconds = 0;
-        normal_jitter_phase = 0;
     } else if (stable_count >= 2 && level == 1) {
         button_armed = true;
+    }
+}
+
+static void process_requested_debug_toggle(void)
+{
+    bool requested;
+
+    portENTER_CRITICAL(&debug_toggle_lock);
+    requested = debug_toggle_requested;
+    debug_toggle_requested = false;
+    portEXIT_CRITICAL(&debug_toggle_lock);
+
+    if (requested) {
+        toggle_debug_page();
     }
 }
 
@@ -368,6 +389,7 @@ static void oled_task(void *arg)
     int tick = 0;
     while (1) {
         poll_debug_button();
+        process_requested_debug_toggle();
         update_web_health();
         if ((tick % 10) == 0) {
             handle_oled();
@@ -412,4 +434,11 @@ void oled_blank_and_reset_screensaver(void)
     idle_seconds = 0;
     normal_jitter_phase = 0;
     blank_seconds = 2;
+}
+
+void oled_request_debug_toggle(void)
+{
+    portENTER_CRITICAL(&debug_toggle_lock);
+    debug_toggle_requested = true;
+    portEXIT_CRITICAL(&debug_toggle_lock);
 }
