@@ -37,12 +37,13 @@
 #define BUTTON_LONG_PRESS_MS 1200
 #define BUTTON_SEQUENCE_GAP_MS 2000
 #define AUTH_TOGGLE_PRESS_COUNT 6
-#define CREDENTIAL_VALUE_CHARS 12
+#define OLED_WIDTH 128
+#define OLED_HEIGHT 64
+#define CONTENT_X_OFFSET 28
+#define CONTENT_Y_OFFSET 18
+#define CREDENTIAL_LINE_CHARS 25
+#define CREDENTIAL_LINE_COUNT 5
 
-static const int width   = 72;
-static const int height  = 40;
-static const int xOffset = 28;
-static const int yOffset = 18;
 static const uint8_t I2C_ADDR_8BIT = (0x3C << 1);
 
 static const char *TAG = "oled";
@@ -63,7 +64,6 @@ static esp_err_t last_web_err = ESP_OK;
 static bool debug_mode = false;
 static bool debug_toggle_requested = false;
 static portMUX_TYPE debug_toggle_lock = portMUX_INITIALIZER_UNLOCKED;
-static unsigned credential_scroll_phase = 0;
 
 static int get_connected_client_count(void)
 {
@@ -118,12 +118,8 @@ static void draw_signal_bar(u8g2_t *u8g2, int x, int y, int8_t rssi)
 
 // Hilfsfunktion: sichere Grenzen für die Animation berechnen
 static void ss_init_bounds(void) {
-    // verwende den Bereich innerhalb deines Offsets und der width/height
-    int drawable_w = width;
-    int drawable_h = height;
-    // starte in der Mitte des nutzbaren Bereichs
-    ss_x = xOffset + drawable_w / 2;
-    ss_y = yOffset + drawable_h / 2;
+    ss_x = OLED_WIDTH / 2;
+    ss_y = OLED_HEIGHT / 2;
     ss_dx = 1; ss_dy = 1;
 }
 
@@ -140,15 +136,15 @@ static void draw_screensaver(u8g2_t *u8g2) {
     int text_w = u8g2_GetStrWidth(u8g2, buf);
     int text_h = 10; // baseline height for 6x10 font
 
-    int min_x = xOffset + 1;
-    int min_y = yOffset + text_h + 1;
-    int max_x = xOffset + width - text_w - 1;
-    int max_y = yOffset + height - 1;
+    int min_x = 1;
+    int min_y = text_h + 1;
+    int max_x = OLED_WIDTH - text_w - 1;
+    int max_y = OLED_HEIGHT - 1;
     if (max_x < min_x) {
-        min_x = max_x = xOffset + 1;
+        min_x = max_x = 1;
     }
     if (max_y < min_y) {
-        min_y = max_y = yOffset + text_h + 1;
+        min_y = max_y = text_h + 1;
     }
 
     ss_x += ss_dx;
@@ -246,7 +242,6 @@ static void poll_debug_button(void)
         if (short_press_count >= AUTH_TOGGLE_PRESS_COUNT) {
             bool auth_enabled = web_server_toggle_authentication();
             short_press_count = 0;
-            credential_scroll_phase = 0;
             screensaver = false;
             idle_seconds = 0;
             blank_seconds = 0;
@@ -322,56 +317,65 @@ static void draw_debug_page(void)
 
     u8g2_ClearBuffer(&u8g2);
     u8g2_SetFont(&u8g2, u8g2_font_6x10_tr);
-    u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 14, line1);
-    u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 26, line2);
-    u8g2_DrawStr(&u8g2, xOffset + 0, yOffset + 38, line3);
+    u8g2_DrawStr(&u8g2, CONTENT_X_OFFSET, CONTENT_Y_OFFSET + 14, line1);
+    u8g2_DrawStr(&u8g2, CONTENT_X_OFFSET, CONTENT_Y_OFFSET + 26, line2);
+    u8g2_DrawStr(&u8g2, CONTENT_X_OFFSET, CONTENT_Y_OFFSET + 38, line3);
     u8g2_SendBuffer(&u8g2);
 }
 
-static void make_scrolling_value(const char *value, unsigned phase,
-                                 char out[CREDENTIAL_VALUE_CHARS + 1])
+static unsigned append_credential_lines(
+    char lines[CREDENTIAL_LINE_COUNT][CREDENTIAL_LINE_CHARS + 1],
+    unsigned line_count, const char *label, const char *value)
 {
-    size_t len = strlen(value);
-    if (len <= CREDENTIAL_VALUE_CHARS) {
-        strlcpy(out, value, CREDENTIAL_VALUE_CHARS + 1);
-        return;
-    }
+    size_t value_len = strlen(value);
+    size_t value_pos = 0;
+    bool first_line = true;
 
-    size_t cycle_len = len + 3;
-    size_t start = phase % cycle_len;
-    for (size_t i = 0; i < CREDENTIAL_VALUE_CHARS; i++) {
-        size_t pos = (start + i) % cycle_len;
-        out[i] = pos < len ? value[pos] : ' ';
+    while ((value_pos < value_len || first_line) &&
+           line_count < CREDENTIAL_LINE_COUNT) {
+        char *line = lines[line_count++];
+        size_t prefix_len = first_line ? strlen(label) : 0;
+        size_t available = CREDENTIAL_LINE_CHARS - prefix_len;
+        size_t remaining = value_len - value_pos;
+        size_t copy_len = remaining < available ? remaining : available;
+
+        if (first_line) {
+            memcpy(line, label, prefix_len);
+        }
+        memcpy(line + prefix_len, value + value_pos, copy_len);
+        line[prefix_len + copy_len] = 0;
+        value_pos += copy_len;
+        first_line = false;
     }
-    out[CREDENTIAL_VALUE_CHARS] = 0;
+    return line_count;
 }
 
 static void draw_credentials_page(void)
 {
     char ssid[33];
     char password[65];
-    char ssid_window[CREDENTIAL_VALUE_CHARS + 1];
-    char password_window[CREDENTIAL_VALUE_CHARS + 1];
-    char ssid_line[CREDENTIAL_VALUE_CHARS + 3];
-    char password_line[CREDENTIAL_VALUE_CHARS + 3];
+    char lines[CREDENTIAL_LINE_COUNT][CREDENTIAL_LINE_CHARS + 1] = {0};
 
     ap_get_config_snapshot(ssid, sizeof(ssid), password, sizeof(password), NULL);
     const char *display_password = password[0] ? password : "<OPEN>";
-    make_scrolling_value(ssid, credential_scroll_phase, ssid_window);
-    make_scrolling_value(display_password, credential_scroll_phase,
-                         password_window);
-    credential_scroll_phase += 2;
-
-    snprintf(ssid_line, sizeof(ssid_line), "S:%s", ssid_window);
-    snprintf(password_line, sizeof(password_line), "P:%s", password_window);
+    unsigned line_count = append_credential_lines(lines, 0, "S:", ssid);
+    line_count = append_credential_lines(lines, line_count, "P:",
+                                         display_password);
 
     u8g2_SetPowerSave(&u8g2, 0);
     u8g2_SetContrast(&u8g2, CONTRAST);
     u8g2_ClearBuffer(&u8g2);
     u8g2_SetFont(&u8g2, u8g2_font_5x7_tr);
-    u8g2_DrawStr(&u8g2, xOffset, yOffset + 9, "WEB AUTH:OFF");
-    u8g2_DrawStr(&u8g2, xOffset, yOffset + 22, ssid_line);
-    u8g2_DrawStr(&u8g2, xOffset, yOffset + 35, password_line);
+    const char *heading = "WEB AUTH:OFF";
+    int heading_x = (OLED_WIDTH - u8g2_GetStrWidth(&u8g2, heading)) / 2;
+    u8g2_DrawStr(&u8g2, heading_x, 8, heading);
+
+    int first_baseline = 19 +
+        (int)(CREDENTIAL_LINE_COUNT - line_count) * 5;
+    for (unsigned i = 0; i < line_count; i++) {
+        int line_x = (OLED_WIDTH - u8g2_GetStrWidth(&u8g2, lines[i])) / 2;
+        u8g2_DrawStr(&u8g2, line_x, first_baseline + (int)i * 9, lines[i]);
+    }
     u8g2_SendBuffer(&u8g2);
 }
 
@@ -439,8 +443,8 @@ static void handle_oled(void)
 
     // Normale Anzeige mit gelegentlichem, kleinem Jitter (alle Aufrufe cycles)
     normal_jitter_phase = (normal_jitter_phase + 1) % 60; // z.B. 1 px Veränderung pro Minute
-    int xoff = xOffset;
-    int yoff = yOffset;
+    int xoff = CONTENT_X_OFFSET;
+    int yoff = CONTENT_Y_OFFSET;
     if (normal_jitter_phase == 0) xoff += 1;
     else if (normal_jitter_phase == 30) xoff -= 1;
 
@@ -517,8 +521,8 @@ esp_err_t oled_start(void)
     u8g2_SetPowerSave(&u8g2, 0);
     u8g2_SetContrast(&u8g2, CONTRAST);
 
-    ESP_LOGI(TAG, "OLED init OK. Active window %dx%d @ offset (%d,%d)",
-             width, height, xOffset, yOffset);
+    ESP_LOGI(TAG, "OLED init OK. Display %dx%d, content offset (%d,%d)",
+             OLED_WIDTH, OLED_HEIGHT, CONTENT_X_OFFSET, CONTENT_Y_OFFSET);
 
     if (xTaskCreate(oled_task, "oled_task", 4096, NULL, 5, NULL) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create OLED task");

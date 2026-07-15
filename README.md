@@ -152,10 +152,11 @@ press must be short; a long press remains reserved for the debug screen. A
 pause longer than two seconds resets the short-press counter.
 
 While authentication is disabled, the OLED overrides its normal/debug view
-and displays the current SoftAP SSID and password. Long values scroll across
-the 1.3-inch display. Six more short presses restore authentication and the
-previous OLED mode. Because this mode exposes credentials and administrative
-HTTP endpoints, use it only temporarily in a trusted physical environment.
+and displays the current SoftAP SSID and password. The 128×64 display uses its
+full width and wraps long values onto additional static lines, so credentials
+do not scroll. Six more short presses restore authentication and the previous
+OLED mode. Because this mode exposes credentials and administrative HTTP
+endpoints, use it only temporarily in a trusted physical environment.
 
 The web UI also provides **OLED Diagnostics → Toggle Debug Page**. It toggles
 the same page without operating GPIO9 and can be used to distinguish a BOOT

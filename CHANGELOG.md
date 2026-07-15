@@ -1,5 +1,13 @@
 # Change Log
 
+## 2026-07-16 — 128×64 OLED layout
+
+- Updated the OLED geometry to use the full 128×64 display for the
+  screensaver and authentication-recovery page while preserving the existing
+  centered positions of the normal and debug views.
+- Replaced scrolling AP credentials with centered, static wrapped lines. The
+  full supported 32-character SSID and 64-character WPA key fit on the page.
+
 ## 2026-07-15 — AP stability, diagnostics, and recovery
 
 This development session made the following changes:
