@@ -44,6 +44,13 @@ SoftAP password. For an intentionally open SoftAP, the password is empty;
 administrative access is therefore not secure and should only be used on a
 trusted, isolated network.
 
+Basic authentication is enabled after every boot. To temporarily disable it,
+press and release BOOT six times, with no more than two seconds between short
+presses. The OLED then shows `WEB AUTH:OFF` and scrolls the current SoftAP SSID
+and password (`<OPEN>` for an open network). Repeat the six-press gesture to
+enable authentication again. This setting is deliberately not persisted;
+resetting or power-cycling always restores authentication.
+
 - Web UI (PPP side): http://192.168.178.50
 - Web UI (SoftAP side): http://192.168.4.1
 
@@ -83,7 +90,7 @@ use the SoftAP address (`http://192.168.4.1/ota`) instead.
 - SoftAP SSID: `ESP32C3-PPP-AP`
 - SoftAP password: `12345678`
 - SoftAP IP: `192.168.4.1`
-- SoftAP channel: `6`
+- SoftAP channel: `11`
 - SoftAP max clients: `4`
 - MQTT broker port: `1883`
 
@@ -119,10 +126,10 @@ The OLED display shows real-time power telemetry with WiFi signal strength indic
 
 ### Screensaver
 After ~60 seconds of idle (power ≤ 0), the display dims and shows a bouncing client count.
-If the AP is restarted by the watchdog, the OLED is blanked for ~2 seconds and the screensaver is reset.
 
 ### Debug Screen
-Press the BOOT button (GPIO9) to toggle the debug screen. The debug screen shows:
+Press and hold the BOOT button (GPIO9) for about 1.2 seconds to toggle the
+debug screen. The debug screen shows:
 - Web server status (R=Running, S=Stopped)
 - HTTP health status (last HTTP response code)
 - OTA progress (if upload in progress)
@@ -136,7 +143,19 @@ Press the BOOT button (GPIO9) to toggle the debug screen. The debug screen shows
 > download mode instead of this application. The OLED may retain its previous
 > image in that mode, so an old `AP:R` can remain visible even though the
 > firmware and access point are not running. Reset without BOOT held, wait for
-> the application to start, and then tap BOOT to open the debug screen.
+> the application to start, and then long-press BOOT to open the debug screen.
+
+### Web Authentication Recovery Screen
+
+Press and release BOOT six times to toggle HTTP Basic authentication. Each
+press must be short; a long press remains reserved for the debug screen. A
+pause longer than two seconds resets the short-press counter.
+
+While authentication is disabled, the OLED overrides its normal/debug view
+and displays the current SoftAP SSID and password. Long values scroll across
+the 1.3-inch display. Six more short presses restore authentication and the
+previous OLED mode. Because this mode exposes credentials and administrative
+HTTP endpoints, use it only temporarily in a trusted physical environment.
 
 The web UI also provides **OLED Diagnostics → Toggle Debug Page**. It toggles
 the same page without operating GPIO9 and can be used to distinguish a BOOT
@@ -156,11 +175,11 @@ This allows you to visually assess the WiFi link quality of connected devices di
 
 ## Watchdog
 
-A task watchdog periodically pings connected SoftAP clients. If a client stops
-responding, the AP is restarted automatically.
-The watchdog is suppressed when OBK reports `online` (and also when the state
-is unknown), and it does not trigger when no clients are connected.
-The watchdog ignores web-server health failures during OTA uploads.
+The task watchdog has a 30-second timeout and is fed by a dedicated task every
+5 seconds. That task also performs the single authoritative local HTTP health
+check. After three consecutive failures it restarts only the web server. HTTP
+health checks are suspended during OTA uploads. SoftAP clients are never used
+as ping targets and failed client pings never restart the access point.
 
 ## Partition Table / OTA Requirements
 

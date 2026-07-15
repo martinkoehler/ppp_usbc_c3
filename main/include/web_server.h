@@ -38,6 +38,12 @@ bool web_server_is_running(void);
 bool web_server_is_ota_in_progress(void);
 int web_server_get_ota_progress(void);
 
+/** Return true when administrative HTTP endpoints require Basic authentication. */
+bool web_server_is_auth_enabled(void);
+
+/** Toggle Basic authentication and return the new enabled state. */
+bool web_server_toggle_authentication(void);
+
 #ifdef __cplusplus
 }
 #endif

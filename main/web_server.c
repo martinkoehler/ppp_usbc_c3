@@ -52,6 +52,8 @@ static int s_health_status = 0;
 static esp_err_t s_health_err = ESP_ERR_INVALID_STATE;
 static int64_t s_health_checked_at_us = 0;
 static portMUX_TYPE s_health_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_auth_enabled = true;
+static portMUX_TYPE s_auth_lock = portMUX_INITIALIZER_UNLOCKED;
 
 #define ADMIN_USERNAME "admin"
 
@@ -65,6 +67,10 @@ static void set_ota_state(bool in_progress, int progress)
 
 static bool web_admin_authorized(httpd_req_t *req)
 {
+    if (!web_server_is_auth_enabled()) {
+        return true;
+    }
+
     char user_info[sizeof(ADMIN_USERNAME) + 1 + 64];
     char expected[128] = "Basic ";
     char received[128];
@@ -565,6 +571,28 @@ int web_server_get_ota_progress(void)
     progress = s_ota_progress;
     portEXIT_CRITICAL(&s_ota_lock);
     return progress;
+}
+
+bool web_server_is_auth_enabled(void)
+{
+    bool enabled;
+    portENTER_CRITICAL(&s_auth_lock);
+    enabled = s_auth_enabled;
+    portEXIT_CRITICAL(&s_auth_lock);
+    return enabled;
+}
+
+bool web_server_toggle_authentication(void)
+{
+    bool enabled;
+    portENTER_CRITICAL(&s_auth_lock);
+    s_auth_enabled = !s_auth_enabled;
+    enabled = s_auth_enabled;
+    portEXIT_CRITICAL(&s_auth_lock);
+
+    ESP_LOGW(TAG, "Web Basic authentication %s by BOOT-button gesture",
+             enabled ? "enabled" : "disabled");
+    return enabled;
 }
 
 void web_server_stop(void)

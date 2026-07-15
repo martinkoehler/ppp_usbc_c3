@@ -33,6 +33,11 @@
 #define OLED_SCL GPIO_NUM_6
 #define OLED_RST U8G2_ESP32_HAL_UNDEFINED
 #define OLED_DEBUG_BUTTON GPIO_NUM_9
+#define BUTTON_DEBOUNCE_SAMPLES 2
+#define BUTTON_LONG_PRESS_MS 1200
+#define BUTTON_SEQUENCE_GAP_MS 2000
+#define AUTH_TOGGLE_PRESS_COUNT 6
+#define CREDENTIAL_VALUE_CHARS 12
 
 static const int width   = 72;
 static const int height  = 40;
@@ -56,9 +61,9 @@ static int64_t last_web_check_us = 0;
 static int last_web_status = 0;
 static esp_err_t last_web_err = ESP_OK;
 static bool debug_mode = false;
-static bool button_armed = true;
 static bool debug_toggle_requested = false;
 static portMUX_TYPE debug_toggle_lock = portMUX_INITIALIZER_UNLOCKED;
+static unsigned credential_scroll_phase = 0;
 
 static int get_connected_client_count(void)
 {
@@ -186,24 +191,70 @@ static void toggle_debug_page(void)
 
 static void poll_debug_button(void)
 {
-    static int last_level = 1;
-    static int stable_count = 0;
+    static int sampled_level = 1;
+    static int stable_level = 1;
+    static unsigned same_sample_count = 0;
+    static TickType_t press_started_at = 0;
+    static TickType_t last_short_release_at = 0;
+    static unsigned short_press_count = 0;
+    static bool long_press_handled = false;
+    TickType_t now = xTaskGetTickCount();
     int level = gpio_get_level(OLED_DEBUG_BUTTON);
 
-    if (level == last_level) {
-        if (stable_count < 5) {
-            stable_count++;
-        }
-    } else {
-        stable_count = 0;
-        last_level = level;
+    if (stable_level == 1 && short_press_count > 0 &&
+        (now - last_short_release_at) > pdMS_TO_TICKS(BUTTON_SEQUENCE_GAP_MS)) {
+        short_press_count = 0;
     }
 
-    if (stable_count >= 2 && level == 0 && button_armed) {
+    if (level == sampled_level) {
+        if (same_sample_count < BUTTON_DEBOUNCE_SAMPLES) {
+            same_sample_count++;
+        }
+    } else {
+        sampled_level = level;
+        same_sample_count = 1;
+    }
+
+    if (stable_level == 0 && !long_press_handled &&
+        (now - press_started_at) >= pdMS_TO_TICKS(BUTTON_LONG_PRESS_MS)) {
         toggle_debug_page();
-        button_armed = false;
-    } else if (stable_count >= 2 && level == 1) {
-        button_armed = true;
+        long_press_handled = true;
+        short_press_count = 0;
+        ESP_LOGI(TAG, "BOOT long press toggled OLED debug page");
+    }
+
+    if (same_sample_count < BUTTON_DEBOUNCE_SAMPLES ||
+        sampled_level == stable_level) {
+        return;
+    }
+
+    stable_level = sampled_level;
+    if (stable_level == 0) {
+        press_started_at = now;
+        long_press_handled = false;
+        return;
+    }
+
+    if (!long_press_handled) {
+        if (short_press_count > 0 &&
+            (now - last_short_release_at) > pdMS_TO_TICKS(BUTTON_SEQUENCE_GAP_MS)) {
+            short_press_count = 0;
+        }
+        last_short_release_at = now;
+        short_press_count++;
+
+        if (short_press_count >= AUTH_TOGGLE_PRESS_COUNT) {
+            bool auth_enabled = web_server_toggle_authentication();
+            short_press_count = 0;
+            credential_scroll_phase = 0;
+            screensaver = false;
+            idle_seconds = 0;
+            blank_seconds = 0;
+            u8g2_SetPowerSave(&u8g2, 0);
+            u8g2_SetContrast(&u8g2, CONTRAST);
+            ESP_LOGW(TAG, "Six BOOT presses set web authentication to %s",
+                     auth_enabled ? "ON" : "OFF");
+        }
     }
 }
 
@@ -277,6 +328,53 @@ static void draw_debug_page(void)
     u8g2_SendBuffer(&u8g2);
 }
 
+static void make_scrolling_value(const char *value, unsigned phase,
+                                 char out[CREDENTIAL_VALUE_CHARS + 1])
+{
+    size_t len = strlen(value);
+    if (len <= CREDENTIAL_VALUE_CHARS) {
+        strlcpy(out, value, CREDENTIAL_VALUE_CHARS + 1);
+        return;
+    }
+
+    size_t cycle_len = len + 3;
+    size_t start = phase % cycle_len;
+    for (size_t i = 0; i < CREDENTIAL_VALUE_CHARS; i++) {
+        size_t pos = (start + i) % cycle_len;
+        out[i] = pos < len ? value[pos] : ' ';
+    }
+    out[CREDENTIAL_VALUE_CHARS] = 0;
+}
+
+static void draw_credentials_page(void)
+{
+    char ssid[33];
+    char password[65];
+    char ssid_window[CREDENTIAL_VALUE_CHARS + 1];
+    char password_window[CREDENTIAL_VALUE_CHARS + 1];
+    char ssid_line[CREDENTIAL_VALUE_CHARS + 3];
+    char password_line[CREDENTIAL_VALUE_CHARS + 3];
+
+    ap_get_config_snapshot(ssid, sizeof(ssid), password, sizeof(password), NULL);
+    const char *display_password = password[0] ? password : "<OPEN>";
+    make_scrolling_value(ssid, credential_scroll_phase, ssid_window);
+    make_scrolling_value(display_password, credential_scroll_phase,
+                         password_window);
+    credential_scroll_phase += 2;
+
+    snprintf(ssid_line, sizeof(ssid_line), "S:%s", ssid_window);
+    snprintf(password_line, sizeof(password_line), "P:%s", password_window);
+
+    u8g2_SetPowerSave(&u8g2, 0);
+    u8g2_SetContrast(&u8g2, CONTRAST);
+    u8g2_ClearBuffer(&u8g2);
+    u8g2_SetFont(&u8g2, u8g2_font_5x7_tr);
+    u8g2_DrawStr(&u8g2, xOffset, yOffset + 9, "WEB AUTH:OFF");
+    u8g2_DrawStr(&u8g2, xOffset, yOffset + 22, ssid_line);
+    u8g2_DrawStr(&u8g2, xOffset, yOffset + 35, password_line);
+    u8g2_SendBuffer(&u8g2);
+}
+
 /**
  * @brief Renders OLED UI: solar power value with WiFi signal strength.
  */
@@ -286,6 +384,14 @@ static void handle_oled(void)
     char power_copy[30];
     mqtt_broker_get_obk_power(power_copy, sizeof(power_copy));
     float p = parse_power(power_copy);
+
+    if (!web_server_is_auth_enabled()) {
+        screensaver = false;
+        idle_seconds = 0;
+        blank_seconds = 0;
+        draw_credentials_page();
+        return;
+    }
 
     if (debug_mode) {
         screensaver = false;
@@ -380,11 +486,11 @@ static void oled_task(void *arg)
         poll_debug_button();
         process_requested_debug_toggle();
         update_cached_web_health();
-        if ((tick % 10) == 0) {
+        if ((tick % 20) == 0) {
             handle_oled();
         }
         tick = (tick + 1) % 1000;
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 

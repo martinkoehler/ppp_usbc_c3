@@ -1,0 +1,42 @@
+# Change Log
+
+## 2026-07-15 — AP stability, diagnostics, and recovery
+
+This development session made the following changes:
+
+- Added OLED SoftAP diagnostics, including AP event logging and compact health
+  codes (`R`, `E`, `M`, `N`, `I`, `C`, and `L`).
+- Removed ping-based SoftAP restarts. Corrected the task-watchdog timing to a
+  30-second timeout with a 5-second feed period and enabled panic/reset on a
+  real watchdog timeout.
+- Added a web control that toggles the OLED debug page without using GPIO9.
+- Made PPP dependent on an attached USB host. PPP now stays inactive when USB
+  provides power only, disconnects when the host disappears, and retries when
+  a host returns.
+- Protected configuration, OTA, and OLED-control HTTP endpoints with Basic
+  authentication using username `admin` and the current SoftAP password. The
+  password is no longer embedded in the configuration page.
+- Centralized the active HTTP health check in the watchdog task and exposed a
+  synchronized cached result to the OLED.
+- Made AP configuration updates complete, validated, and transactional. Form
+  bodies are fully received, WPA credentials are checked, HTML output is
+  escaped, and failed runtime or NVS updates roll back to the old settings.
+- Propagated task and subsystem startup failures instead of silently starting
+  with missing services.
+- Added standard recovery for exhausted or version-incompatible NVS storage.
+- Synchronized shared PPP address data, MQTT broker lifecycle state, SoftAP
+  configuration/state, HTTP server lifecycle, OTA progress, and health data.
+- Pinned ESP-IDF and managed-component versions, replaced source globbing with
+  an explicit source list, corrected console defaults, removed an invalid PPP
+  Kconfig symbol, and added the required 4 MB flash-size default.
+- Invalidated cached client RSSI data after polling failures and prevented
+  duplicate RSSI polling tasks.
+- Added distinct BOOT gestures: a 1.2-second long press toggles the OLED debug
+  page, while six short presses (maximum two-second gap) toggle web Basic
+  authentication.
+- Added an authentication-recovery OLED page. While authentication is off it
+  scrolls the current SoftAP SSID and password; an open network is shown as
+  `<OPEN>`. Authentication is always restored by reset or power-cycle.
+
+Both the normal project build and a clean build generated only from
+`sdkconfig.defaults` were verified with ESP-IDF 6.1.0.
