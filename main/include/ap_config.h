@@ -10,6 +10,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -30,14 +31,10 @@ extern "C" {
  *  - access ap_netif for DHCP station listing
  */
 
-/** Get current AP SSID string (NUL terminated). */
-const char *ap_get_ssid(void);
-
-/** Get current AP password string (NUL terminated). */
-const char *ap_get_pass(void);
-
-/** Get current AP channel. */
-uint8_t ap_get_channel(void);
+/** Copy a consistent snapshot of the current AP configuration. */
+void ap_get_config_snapshot(char *ssid, size_t ssid_len,
+                            char *pass, size_t pass_len,
+                            uint8_t *channel);
 
 /** AP netif handle (for DHCP client lookup). */
 esp_netif_t *ap_get_netif(void);

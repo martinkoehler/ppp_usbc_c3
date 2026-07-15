@@ -18,6 +18,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 #include "esp_log.h"
 #include "esp_event.h"
@@ -67,7 +68,9 @@ static char g_ap_ssid[33] = DEFAULT_AP_SSID;
 static char g_ap_pass[65] = DEFAULT_AP_PASS;
 static uint8_t g_ap_channel = DEFAULT_AP_CHANNEL;
 static esp_netif_t *ap_netif = NULL;
-static volatile bool ap_started = false;
+static bool ap_started = false;
+static SemaphoreHandle_t ap_config_mutex = NULL;
+static portMUX_TYPE ap_state_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static esp_err_t save_ap_config_to_nvs(const char *ssid, const char *pass, uint8_t channel);
 
@@ -195,12 +198,16 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 
     switch (event_id) {
         case WIFI_EVENT_AP_START:
+            portENTER_CRITICAL(&ap_state_lock);
             ap_started = true;
+            portEXIT_CRITICAL(&ap_state_lock);
             ESP_LOGI(TAG, "WiFi SoftAP driver started");
             break;
 
         case WIFI_EVENT_AP_STOP:
+            portENTER_CRITICAL(&ap_state_lock);
             ap_started = false;
+            portEXIT_CRITICAL(&ap_state_lock);
             ESP_LOGW(TAG, "WiFi SoftAP driver stopped");
             break;
 
@@ -330,15 +337,33 @@ static void wifi_init_softap(void)
  * ap_config.h interface (used by web_server.c)
  * ========================================================================= */
 
-const char *ap_get_ssid(void) { return g_ap_ssid; }
-const char *ap_get_pass(void) { return g_ap_pass; }
-uint8_t ap_get_channel(void) { return g_ap_channel; }
+void ap_get_config_snapshot(char *ssid, size_t ssid_len,
+                            char *pass, size_t pass_len,
+                            uint8_t *channel)
+{
+    if (ap_config_mutex) {
+        xSemaphoreTake(ap_config_mutex, portMAX_DELAY);
+    }
+    if (ssid && ssid_len > 0) strlcpy(ssid, g_ap_ssid, ssid_len);
+    if (pass && pass_len > 0) strlcpy(pass, g_ap_pass, pass_len);
+    if (channel) *channel = g_ap_channel;
+    if (ap_config_mutex) {
+        xSemaphoreGive(ap_config_mutex);
+    }
+}
 esp_netif_t *ap_get_netif(void) { return ap_netif; }
-bool ap_is_running(void) { return ap_started; }
+bool ap_is_running(void)
+{
+    bool started;
+    portENTER_CRITICAL(&ap_state_lock);
+    started = ap_started;
+    portEXIT_CRITICAL(&ap_state_lock);
+    return started;
+}
 
 char ap_get_health_code(void)
 {
-    if (!ap_started) {
+    if (!ap_is_running()) {
         return 'E';
     }
 
@@ -358,11 +383,16 @@ char ap_get_health_code(void)
         return 'I';
     }
 
+    char expected_ssid[sizeof(g_ap_ssid)];
+    uint8_t expected_channel;
+    ap_get_config_snapshot(expected_ssid, sizeof(expected_ssid),
+                           NULL, 0, &expected_channel);
+
     wifi_config_t config;
     if (esp_wifi_get_config(WIFI_IF_AP, &config) != ESP_OK ||
-        config.ap.channel != g_ap_channel ||
-        config.ap.ssid_len != strlen(g_ap_ssid) ||
-        memcmp(config.ap.ssid, g_ap_ssid, config.ap.ssid_len) != 0) {
+        config.ap.channel != expected_channel ||
+        config.ap.ssid_len != strlen(expected_ssid) ||
+        memcmp(config.ap.ssid, expected_ssid, config.ap.ssid_len) != 0) {
         return 'C';
     }
 
@@ -392,6 +422,8 @@ esp_err_t ap_set_credentials_and_restart(const char *ssid, const char *pass, uin
         }
     }
 
+    xSemaphoreTake(ap_config_mutex, portMAX_DELAY);
+
     char old_ssid[sizeof(g_ap_ssid)];
     char old_pass[sizeof(g_ap_pass)];
     uint8_t old_channel = g_ap_channel;
@@ -409,6 +441,7 @@ esp_err_t ap_set_credentials_and_restart(const char *ssid, const char *pass, uin
         err = save_ap_config_to_nvs(g_ap_ssid, g_ap_pass, g_ap_channel);
     }
     if (err == ESP_OK) {
+        xSemaphoreGive(ap_config_mutex);
         return ESP_OK;
     }
 
@@ -430,12 +463,16 @@ esp_err_t ap_set_credentials_and_restart(const char *ssid, const char *pass, uin
                      esp_err_to_name(restore_nvs_err));
         }
     }
+    xSemaphoreGive(ap_config_mutex);
     return err;
 }
 
 esp_err_t ap_restart(void)
 {
-    return apply_ap_config_and_restart();
+    xSemaphoreTake(ap_config_mutex, portMAX_DELAY);
+    esp_err_t err = apply_ap_config_and_restart();
+    xSemaphoreGive(ap_config_mutex);
+    return err;
 }
 
 /* =========================================================================
@@ -455,6 +492,9 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_err);
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    ap_config_mutex = xSemaphoreCreateMutex();
+    ESP_ERROR_CHECK(ap_config_mutex ? ESP_OK : ESP_ERR_NO_MEM);
 
     load_ap_config_from_nvs();
     wifi_init_softap();

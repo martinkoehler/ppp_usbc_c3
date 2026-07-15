@@ -32,6 +32,7 @@
 #include "lwip/ip4_addr.h"
 #include "net/if.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 /* Default AP subnet shown in UI */
@@ -43,8 +44,10 @@
 
 static const char *TAG = "web_server";
 static httpd_handle_t s_httpd = NULL;
+static SemaphoreHandle_t s_server_mutex = NULL;
 static bool s_ota_in_progress = false;
 static int s_ota_progress = -1;
+static portMUX_TYPE s_ota_lock = portMUX_INITIALIZER_UNLOCKED;
 static int s_health_status = 0;
 static esp_err_t s_health_err = ESP_ERR_INVALID_STATE;
 static int64_t s_health_checked_at_us = 0;
@@ -52,16 +55,25 @@ static portMUX_TYPE s_health_lock = portMUX_INITIALIZER_UNLOCKED;
 
 #define ADMIN_USERNAME "admin"
 
+static void set_ota_state(bool in_progress, int progress)
+{
+    portENTER_CRITICAL(&s_ota_lock);
+    s_ota_in_progress = in_progress;
+    s_ota_progress = progress;
+    portEXIT_CRITICAL(&s_ota_lock);
+}
+
 static bool web_admin_authorized(httpd_req_t *req)
 {
     char user_info[sizeof(ADMIN_USERNAME) + 1 + 64];
     char expected[128] = "Basic ";
     char received[128];
+    char password[65];
     size_t encoded_len = 0;
-    const char *password = ap_get_pass();
+    ap_get_config_snapshot(NULL, 0, password, sizeof(password), NULL);
 
     int n = snprintf(user_info, sizeof(user_info), "%s:%s",
-                     ADMIN_USERNAME, password ? password : "");
+                     ADMIN_USERNAME, password);
     if (n < 0 || n >= (int)sizeof(user_info)) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                             "Unable to prepare authentication");
@@ -187,10 +199,11 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     ip4_addr_t ppp_ip = {0}, ppp_gw = {0}, ppp_nm = {0};
     ppp_get_ip_info(&ppp_ip, &ppp_gw, &ppp_nm);
 
-    const char *ssid = ap_get_ssid();
+    char ssid[33];
+    uint8_t channel;
+    ap_get_config_snapshot(ssid, sizeof(ssid), NULL, 0, &channel);
     char escaped_ssid[256];
-    html_escape(ssid ? ssid : "", escaped_ssid, sizeof(escaped_ssid));
-    uint8_t channel = ap_get_channel();
+    html_escape(ssid, escaped_ssid, sizeof(escaped_ssid));
 
     snprintf(page, page_len,
         "<!doctype html><html><head>"
@@ -348,6 +361,8 @@ static esp_err_t status_all_get_handler(httpd_req_t *req)
 
     char mqtt_ppp_uri[64];
     bool ppp_up = (ppp_ip.addr != 0);
+    uint8_t ap_channel;
+    ap_get_config_snapshot(NULL, 0, NULL, 0, &ap_channel);
     if (ppp_ip.addr != 0) {
         snprintf(mqtt_ppp_uri, sizeof(mqtt_ppp_uri), "mqtt://%s:%d",
                  ip4addr_ntoa(&ppp_ip), MQTT_BROKER_PORT);
@@ -387,7 +402,7 @@ static esp_err_t status_all_get_handler(httpd_req_t *req)
              mqtt_ap_uri,
              mqtt_ppp_uri,
              ppp_up ? "true" : "false",
-             ap_get_channel(),
+             ap_channel,
              IP2STR(&ppp_ip), IP2STR(&ppp_gw), IP2STR(&ppp_nm));
 
     wifi_sta_list_t sta_list = {0};
@@ -460,7 +475,13 @@ static bool store_health_result(int status, esp_err_t err,
 
 bool web_server_health_check_ex(int *status_out, esp_err_t *err_out)
 {
+    if (!s_server_mutex) {
+        return store_health_result(0, ESP_ERR_INVALID_STATE,
+                                   status_out, err_out);
+    }
+    xSemaphoreTake(s_server_mutex, portMAX_DELAY);
     if (!s_httpd) {
+        xSemaphoreGive(s_server_mutex);
         return store_health_result(0, ESP_ERR_INVALID_STATE,
                                    status_out, err_out);
     }
@@ -486,12 +507,14 @@ bool web_server_health_check_ex(int *status_out, esp_err_t *err_out)
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
+        xSemaphoreGive(s_server_mutex);
         return store_health_result(0, ESP_ERR_NO_MEM, status_out, err_out);
     }
 
     esp_err_t err = esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
+    xSemaphoreGive(s_server_mutex);
 
     return store_health_result(status, err, status_out, err_out);
 }
@@ -519,25 +542,40 @@ void web_server_get_cached_health(int *status_out, esp_err_t *err_out,
 
 bool web_server_is_running(void)
 {
-    return (s_httpd != NULL);
+    if (!s_server_mutex) return false;
+    xSemaphoreTake(s_server_mutex, portMAX_DELAY);
+    bool running = s_httpd != NULL;
+    xSemaphoreGive(s_server_mutex);
+    return running;
 }
 
 bool web_server_is_ota_in_progress(void)
 {
-    return s_ota_in_progress;
+    bool in_progress;
+    portENTER_CRITICAL(&s_ota_lock);
+    in_progress = s_ota_in_progress;
+    portEXIT_CRITICAL(&s_ota_lock);
+    return in_progress;
 }
 
 int web_server_get_ota_progress(void)
 {
-    return s_ota_progress;
+    int progress;
+    portENTER_CRITICAL(&s_ota_lock);
+    progress = s_ota_progress;
+    portEXIT_CRITICAL(&s_ota_lock);
+    return progress;
 }
 
 void web_server_stop(void)
 {
+    if (!s_server_mutex) return;
+    xSemaphoreTake(s_server_mutex, portMAX_DELAY);
     if (s_httpd) {
         httpd_stop(s_httpd);
         s_httpd = NULL;
     }
+    xSemaphoreGive(s_server_mutex);
 }
 
 void web_server_restart(void)
@@ -689,7 +727,7 @@ static esp_err_t set_post_handler(httpd_req_t *req)
                         strcmp(open_raw, "1") == 0;
 
     if (!open_network && pass[0] == 0) {
-        strlcpy(pass, ap_get_pass(), sizeof(pass));
+        ap_get_config_snapshot(NULL, 0, pass, sizeof(pass), NULL);
     } else if (open_network) {
         pass[0] = 0;
     }
@@ -747,21 +785,18 @@ static esp_err_t ota_post_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    s_ota_in_progress = true;
-    s_ota_progress = 0;
+    set_ota_state(true, 0);
 
     if (req->content_len == 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty OTA image");
-        s_ota_in_progress = false;
-        s_ota_progress = -1;
+        set_ota_state(false, -1);
         return ESP_FAIL;
     }
 
     const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
     if (!update_partition) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No OTA partition");
-        s_ota_in_progress = false;
-        s_ota_progress = -1;
+        set_ota_state(false, -1);
         return ESP_FAIL;
     }
 
@@ -769,8 +804,7 @@ static esp_err_t ota_post_handler(httpd_req_t *req)
     esp_err_t err = esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, &ota_handle);
     if (err != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA begin failed");
-        s_ota_in_progress = false;
-        s_ota_progress = -1;
+        set_ota_state(false, -1);
         return ESP_FAIL;
     }
 
@@ -785,8 +819,7 @@ static esp_err_t ota_post_handler(httpd_req_t *req)
         if (recv_len <= 0) {
             esp_ota_abort(ota_handle);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA receive failed");
-            s_ota_in_progress = false;
-            s_ota_progress = -1;
+            set_ota_state(false, -1);
             return ESP_FAIL;
         }
 
@@ -794,34 +827,31 @@ static esp_err_t ota_post_handler(httpd_req_t *req)
         if (err != ESP_OK) {
             esp_ota_abort(ota_handle);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA write failed");
-            s_ota_in_progress = false;
-            s_ota_progress = -1;
+            set_ota_state(false, -1);
             return ESP_FAIL;
         }
         remaining -= recv_len;
         size_t written = total - remaining;
         if (total > 0) {
-            s_ota_progress = (int)((written * 100U) / total);
+            set_ota_state(true, (int)((written * 100U) / total));
         }
     }
 
     err = esp_ota_end(ota_handle);
     if (err != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA end failed");
-        s_ota_in_progress = false;
-        s_ota_progress = -1;
+        set_ota_state(false, -1);
         return ESP_FAIL;
     }
 
     err = esp_ota_set_boot_partition(update_partition);
     if (err != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA set boot partition failed");
-        s_ota_in_progress = false;
-        s_ota_progress = -1;
+        set_ota_state(false, -1);
         return ESP_FAIL;
     }
 
-    s_ota_progress = 100;
+    set_ota_state(true, 100);
     httpd_resp_sendstr(req, "OK");
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_restart();
@@ -834,8 +864,17 @@ static esp_err_t ota_post_handler(httpd_req_t *req)
 
 esp_err_t web_server_start(void)
 {
+    if (!s_server_mutex) {
+        s_server_mutex = xSemaphoreCreateMutex();
+        if (!s_server_mutex) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    xSemaphoreTake(s_server_mutex, portMAX_DELAY);
+
     if (s_httpd) {
         ESP_LOGI(TAG, "Webserver already running");
+        xSemaphoreGive(s_server_mutex);
         return ESP_OK;
     }
 
@@ -850,6 +889,7 @@ esp_err_t web_server_start(void)
 
     esp_err_t err = httpd_start(&s_httpd, &config);
     if (err != ESP_OK) {
+        xSemaphoreGive(s_server_mutex);
         return err;
     }
 
@@ -899,11 +939,13 @@ esp_err_t web_server_start(void)
     if (err != ESP_OK) goto register_failed;
 
     ESP_LOGI(TAG, "Webserver started on http://%s/", AP_IP_ADDR);
+    xSemaphoreGive(s_server_mutex);
     return ESP_OK;
 
 register_failed:
     ESP_LOGE(TAG, "Failed to register HTTP handler: %s", esp_err_to_name(err));
     httpd_stop(s_httpd);
     s_httpd = NULL;
+    xSemaphoreGive(s_server_mutex);
     return err;
 }

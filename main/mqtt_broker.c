@@ -49,6 +49,8 @@ static const char *TAG = "mqtt_broker";
 
 static TaskHandle_t s_broker_task = NULL;
 static bool s_broker_running = false;
+static bool s_broker_starting = false;
+static portMUX_TYPE s_broker_state_lock = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t s_sub_task = NULL;
 static esp_mqtt_client_handle_t s_sub_client = NULL;
 static char s_sub_uri[64];
@@ -259,32 +261,52 @@ static void mqtt_broker_task(void *arg)
     ESP_LOGI(TAG, "Mosquitto broker starting on port %d (host=%s)...",
              cfg.port, cfg.host);
 
+    portENTER_CRITICAL(&s_broker_state_lock);
     s_broker_running = true;
+    portEXIT_CRITICAL(&s_broker_state_lock);
     int rc = mosq_broker_run(&cfg);
+    portENTER_CRITICAL(&s_broker_state_lock);
     s_broker_running = false;
+    s_broker_task = NULL;
+    portEXIT_CRITICAL(&s_broker_state_lock);
 
     ESP_LOGW(TAG, "Mosquitto broker exited rc=%d", rc);
-    s_broker_task = NULL;
     vTaskDelete(NULL);
 }
 
 esp_err_t mqtt_broker_start(void)
 {
-    if (s_broker_task || s_broker_running) {
+    portENTER_CRITICAL(&s_broker_state_lock);
+    bool already_started = s_broker_task || s_broker_running || s_broker_starting;
+    if (!already_started) {
+        s_broker_starting = true;
+    }
+    portEXIT_CRITICAL(&s_broker_state_lock);
+
+    if (already_started) {
         ESP_LOGI(TAG, "Broker already running");
         return ESP_OK;
     }
 
     esp_err_t err = mqtt_broker_init_telemetry();
     if (err != ESP_OK) {
+        portENTER_CRITICAL(&s_broker_state_lock);
+        s_broker_starting = false;
+        portEXIT_CRITICAL(&s_broker_state_lock);
         return err;
     }
 
     if (xTaskCreate(mqtt_broker_task, "mosq_broker",
                     8192, NULL, 8, &s_broker_task) != pdPASS) {
+        portENTER_CRITICAL(&s_broker_state_lock);
         s_broker_task = NULL;
+        s_broker_starting = false;
+        portEXIT_CRITICAL(&s_broker_state_lock);
         return ESP_ERR_NO_MEM;
     }
+    portENTER_CRITICAL(&s_broker_state_lock);
+    s_broker_starting = false;
+    portEXIT_CRITICAL(&s_broker_state_lock);
     if (!s_sub_task) {
         if (xTaskCreate(mqtt_sub_task, "mqtt_sub",
                         4096, NULL, 7, &s_sub_task) != pdPASS) {
@@ -297,5 +319,9 @@ esp_err_t mqtt_broker_start(void)
 
 bool mqtt_broker_is_running(void)
 {
-    return s_broker_running;
+    bool running;
+    portENTER_CRITICAL(&s_broker_state_lock);
+    running = s_broker_running;
+    portEXIT_CRITICAL(&s_broker_state_lock);
+    return running;
 }

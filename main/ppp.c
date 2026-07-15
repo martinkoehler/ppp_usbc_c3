@@ -46,6 +46,21 @@ static EventGroupHandle_t s_event_group;
 #define PPP_USB_TX_WAIT_MS 10
 
 static bool s_ppp_up = false;
+static ip4_addr_t s_ppp_ip = {0};
+static ip4_addr_t s_ppp_gw = {0};
+static ip4_addr_t s_ppp_nm = {0};
+static portMUX_TYPE s_ppp_state_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static void set_ppp_state(bool up, const ip4_addr_t *ip,
+                          const ip4_addr_t *gw, const ip4_addr_t *nm)
+{
+    portENTER_CRITICAL(&s_ppp_state_lock);
+    s_ppp_up = up;
+    s_ppp_ip.addr = ip ? ip->addr : 0;
+    s_ppp_gw.addr = gw ? gw->addr : 0;
+    s_ppp_nm.addr = nm ? nm->addr : 0;
+    portEXIT_CRITICAL(&s_ppp_state_lock);
+}
 
 /**
  * @brief PPP RX task: reads bytes from USB Serial/JTAG and feeds to PPP stack.
@@ -113,14 +128,14 @@ static void ppp_status_cb(ppp_pcb *pcb, int err_code, void *ctx)
             /* Re-assert PPP as the default route after link-up. */
             // pppapi_set_default(ppp);
 
-            s_ppp_up = true;
+            set_ppp_state(true, &ip, &gw, &nm);
             xEventGroupSetBits(s_event_group, PPP_CONNECTED_BIT);
             break;
         }
         case PPPERR_USER:
         default:
             ESP_LOGW(TAG, "PPP error/closed: %d", err_code);
-            s_ppp_up = false;
+            set_ppp_state(false, NULL, NULL, NULL);
             xEventGroupSetBits(s_event_group, PPP_DISCONN_BIT);
             break;
     }
@@ -162,7 +177,7 @@ static void ppp_reconnect_task(void *arg)
                 pppapi_close(ppp, 1);
                 connect_requested = false;
             }
-            s_ppp_up = false;
+            set_ppp_state(false, NULL, NULL, NULL);
         } else if (!connect_requested &&
                    (int32_t)(xTaskGetTickCount() - retry_after) >= 0) {
             ESP_LOGI(TAG, "USB host detected; starting PPP negotiation");
@@ -226,27 +241,27 @@ esp_err_t ppp_usb_start(void)
 
 bool ppp_is_up(void)
 {
-    return s_ppp_up;
+    bool up;
+    portENTER_CRITICAL(&s_ppp_state_lock);
+    up = s_ppp_up;
+    portEXIT_CRITICAL(&s_ppp_state_lock);
+    return up;
 }
 
 void ppp_get_ip_info(ip4_addr_t *ip, ip4_addr_t *gw, ip4_addr_t *nm)
 {
-    if (ip) ip->addr = 0;
-    if (gw) gw->addr = 0;
-    if (nm) nm->addr = 0;
-
-    if (ppp && ppp->netif) {
-        if (ip) *ip = ppp->netif->ip_addr.u_addr.ip4;
-        if (gw) *gw = ppp->netif->gw.u_addr.ip4;
-        if (nm) *nm = ppp->netif->netmask.u_addr.ip4;
-    }
+    portENTER_CRITICAL(&s_ppp_state_lock);
+    if (ip) *ip = s_ppp_ip;
+    if (gw) *gw = s_ppp_gw;
+    if (nm) *nm = s_ppp_nm;
+    portEXIT_CRITICAL(&s_ppp_state_lock);
 }
 
 ip4_addr_t ppp_get_ip(void)
 {
-    ip4_addr_t ip = { .addr = 0 };
-    if (ppp && ppp->netif) {
-        ip = ppp->netif->ip_addr.u_addr.ip4;
-    }
+    ip4_addr_t ip;
+    portENTER_CRITICAL(&s_ppp_state_lock);
+    ip = s_ppp_ip;
+    portEXIT_CRITICAL(&s_ppp_state_lock);
     return ip;
 }
