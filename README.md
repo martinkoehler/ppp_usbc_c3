@@ -39,6 +39,10 @@ The Webserver shows the IP of connected client. Due to the `route add` command, 
 ## Web UI & OTA Update
 
 The device runs a web UI for status, SSID/password config, and OTA updates.
+It uses HTTP Basic authentication with username `admin` and the current
+SoftAP password. For an intentionally open SoftAP, the password is empty;
+administrative access is therefore not secure and should only be used on a
+trusted, isolated network.
 
 - Web UI (PPP side): http://192.168.178.50
 - Web UI (SoftAP side): http://192.168.4.1
@@ -58,6 +62,7 @@ Then upload it:
 
 ```sh
 wget --method=POST \
+  --user=admin --password='YOUR_AP_PASSWORD' \
   --header="Content-Type: application/octet-stream" \
   --header="X-OTA-Filename: ppp_usb_c3.bin" \
   --body-file=build/ppp_usb_c3.bin \

@@ -21,6 +21,7 @@
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "esp_http_client.h"
+#include "esp_tls_crypto.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_system.h"
@@ -42,6 +43,49 @@ static const char *TAG = "web_server";
 static httpd_handle_t s_httpd = NULL;
 static bool s_ota_in_progress = false;
 static int s_ota_progress = -1;
+
+#define ADMIN_USERNAME "admin"
+
+static bool web_admin_authorized(httpd_req_t *req)
+{
+    char user_info[sizeof(ADMIN_USERNAME) + 1 + 64];
+    char expected[128] = "Basic ";
+    char received[128];
+    size_t encoded_len = 0;
+    const char *password = ap_get_pass();
+
+    int n = snprintf(user_info, sizeof(user_info), "%s:%s",
+                     ADMIN_USERNAME, password ? password : "");
+    if (n < 0 || n >= (int)sizeof(user_info)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Unable to prepare authentication");
+        return false;
+    }
+
+    if (esp_crypto_base64_encode(
+            (unsigned char *)expected + 6, sizeof(expected) - 6,
+            &encoded_len, (const unsigned char *)user_info, strlen(user_info)) != 0 ||
+        encoded_len + 6 >= sizeof(expected)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Unable to prepare authentication");
+        return false;
+    }
+    expected[6 + encoded_len] = 0;
+
+    size_t header_len = httpd_req_get_hdr_value_len(req, "Authorization");
+    if (header_len == 0 || header_len >= sizeof(received) ||
+        httpd_req_get_hdr_value_str(req, "Authorization", received,
+                                    sizeof(received)) != ESP_OK ||
+        strcmp(received, expected) != 0) {
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_set_hdr(req, "WWW-Authenticate",
+                           "Basic realm=\"ESP32-C3 Router\"");
+        httpd_resp_sendstr(req, "Authentication required");
+        return false;
+    }
+
+    return true;
+}
 
 /* --------------------------------------------------------------------------
  * Helper: JSON escaping (minimal: quotes, backslashes, control chars)
@@ -94,6 +138,10 @@ static void json_escape(const char *in, char *out, size_t out_len)
 
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
+    if (!web_admin_authorized(req)) {
+        return ESP_OK;
+    }
+
     const size_t page_len = 8192;
     char *page = (char *)malloc(page_len);
     if (!page) {
@@ -106,7 +154,6 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     ppp_get_ip_info(&ppp_ip, &ppp_gw, &ppp_nm);
 
     const char *ssid = ap_get_ssid();
-    const char *pass = ap_get_pass();
     uint8_t channel = ap_get_channel();
 
     snprintf(page, page_len,
@@ -194,9 +241,10 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<b>PPP Netmask:</b> <span id='pppNm'>" IPSTR "</span></p><hr>"
         "<h3>Change AP Settings</h3>"
         "<form method='POST' action='/set'>SSID:<br><input name='ssid' maxlength='32' value='%s'><br>"
-        "Password:<br><input name='pass' maxlength='64' value='%s'><br>"
+        "Password:<br><input type='password' name='pass' maxlength='64' value='' placeholder='Leave blank to keep current'><br>"
+        "<label><input type='checkbox' name='open' value='1'> Use an open network</label><br>"
         "Channel:<br><input name='channel' type='number' min='1' max='11' step='1' value='%u'><br>"
-        "<small>Empty password = open network. WPA2 requires ≥8 chars. Valid Wi-Fi channels: 1 to 11.</small><br><br>"
+        "<small>Leave password blank to keep it unchanged. WPA2 requires ≥8 chars. Valid Wi-Fi channels: 1 to 11.</small><br><br>"
         "<input type='submit' value='Save & Restart AP'></form><hr>"
         "<h3>OLED Diagnostics</h3>"
         "<form method='POST' action='/oled/debug'><button type='submit'>Toggle Debug Page</button></form>"
@@ -221,7 +269,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<tbody id='clientTableBody'><tr><td colspan='3'>Loading...</td></tr></tbody></table><hr>",
         AJAX_REFRESH_SEC,
         IP2STR(&ppp_ip), IP2STR(&ppp_gw), IP2STR(&ppp_nm),
-        ssid ? ssid : "", pass ? pass : "", channel, channel
+        ssid ? ssid : "", channel, channel
     );
 
     strlcat(page, "</body></html>", page_len);
@@ -490,6 +538,10 @@ static bool parse_form_field(const char *buf, const char *key, char *out, size_t
 
 static esp_err_t set_post_handler(httpd_req_t *req)
 {
+    if (!web_admin_authorized(req)) {
+        return ESP_OK;
+    }
+
     char buf[256];
     int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (len <= 0) {
@@ -501,10 +553,19 @@ static esp_err_t set_post_handler(httpd_req_t *req)
     char ssid[33] = {0};
     char pass[65] = {0};
     char channel_raw[4] = {0};
+    char open_raw[2] = {0};
 
     parse_form_field(buf, "ssid", ssid, sizeof(ssid));
     parse_form_field(buf, "pass", pass, sizeof(pass));
     parse_form_field(buf, "channel", channel_raw, sizeof(channel_raw));
+    bool open_network = parse_form_field(buf, "open", open_raw, sizeof(open_raw)) &&
+                        strcmp(open_raw, "1") == 0;
+
+    if (!open_network && pass[0] == 0) {
+        strlcpy(pass, ap_get_pass(), sizeof(pass));
+    } else if (open_network) {
+        pass[0] = 0;
+    }
 
     char *endptr = NULL;
     long channel = strtol(channel_raw, &endptr, 10);
@@ -539,6 +600,10 @@ static esp_err_t set_post_handler(httpd_req_t *req)
 
 static esp_err_t oled_debug_post_handler(httpd_req_t *req)
 {
+    if (!web_admin_authorized(req)) {
+        return ESP_OK;
+    }
+
     oled_request_debug_toggle();
     httpd_resp_set_status(req, "303 See Other");
     httpd_resp_set_hdr(req, "Location", "/");
@@ -548,6 +613,10 @@ static esp_err_t oled_debug_post_handler(httpd_req_t *req)
 
 static esp_err_t ota_post_handler(httpd_req_t *req)
 {
+    if (!web_admin_authorized(req)) {
+        return ESP_OK;
+    }
+
     s_ota_in_progress = true;
     s_ota_progress = 0;
 
