@@ -1,8 +1,13 @@
-file(GLOB_RECURSE SOURCES *.c)
 idf_component_register(
-	SRCS 
-	    ${SOURCES}
-        INCLUDE_DIRS 
-	    "include"
-	    "."
+    SRCS
+        "client_rssi.c"
+        "mqtt_broker.c"
+        "oled.c"
+        "ppp.c"
+        "ppp_usb_main.c"
+        "watchdog.c"
+        "web_server.c"
+    INCLUDE_DIRS
+        "include"
+        "."
 )
