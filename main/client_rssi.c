@@ -74,20 +74,26 @@ static void rssi_update_task(void *arg)
 
 /* -------------------- Public API -------------------- */
 
-void client_rssi_init(void)
+esp_err_t client_rssi_init(void)
 {
     if (!rssi_mutex) {
         rssi_mutex = xSemaphoreCreateMutex();
-        configASSERT(rssi_mutex);
+        if (!rssi_mutex) {
+            return ESP_ERR_NO_MEM;
+        }
     }
 
     memset(sta_rssi_list, 0, sizeof(sta_rssi_list));
     sta_count = 0;
 
-    xTaskCreate(rssi_update_task, "rssi_update",
-                4096, NULL, 6, NULL);
+    if (xTaskCreate(rssi_update_task, "rssi_update",
+                    4096, NULL, 6, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create RSSI update task");
+        return ESP_ERR_NO_MEM;
+    }
 
     ESP_LOGI(TAG, "Client RSSI tracking initialized");
+    return ESP_OK;
 }
 
 int8_t client_rssi_get_by_mac(const uint8_t *mac)

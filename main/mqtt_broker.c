@@ -188,8 +188,17 @@ static void mqtt_sub_task(void *arg)
             };
             s_sub_client = esp_mqtt_client_init(&cfg);
             if (s_sub_client) {
-                esp_mqtt_client_register_event(s_sub_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
-                esp_mqtt_client_start(s_sub_client);
+                esp_err_t err = esp_mqtt_client_register_event(
+                    s_sub_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
+                if (err == ESP_OK) {
+                    err = esp_mqtt_client_start(s_sub_client);
+                }
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to start local MQTT subscriber: %s",
+                             esp_err_to_name(err));
+                    esp_mqtt_client_destroy(s_sub_client);
+                    s_sub_client = NULL;
+                }
             }
         }
         vTaskDelay(pdMS_TO_TICKS(2000));
@@ -198,12 +207,15 @@ static void mqtt_sub_task(void *arg)
 
 /* -------------------- Telemetry -------------------- */
 
-void mqtt_broker_init_telemetry(void)
+esp_err_t mqtt_broker_init_telemetry(void)
 {
     if (!g_obk_mutex) {
         g_obk_mutex = xSemaphoreCreateMutex();
-        configASSERT(g_obk_mutex);
+        if (!g_obk_mutex) {
+            return ESP_ERR_NO_MEM;
+        }
     }
+    return ESP_OK;
 }
 
 void mqtt_broker_get_obk_power(char *out, size_t out_len)
@@ -256,21 +268,31 @@ static void mqtt_broker_task(void *arg)
     vTaskDelete(NULL);
 }
 
-void mqtt_broker_start(void)
+esp_err_t mqtt_broker_start(void)
 {
     if (s_broker_task || s_broker_running) {
         ESP_LOGI(TAG, "Broker already running");
-        return;
+        return ESP_OK;
     }
 
-    mqtt_broker_init_telemetry();
+    esp_err_t err = mqtt_broker_init_telemetry();
+    if (err != ESP_OK) {
+        return err;
+    }
 
-    xTaskCreate(mqtt_broker_task, "mosq_broker",
-                8192, NULL, 8, &s_broker_task);
+    if (xTaskCreate(mqtt_broker_task, "mosq_broker",
+                    8192, NULL, 8, &s_broker_task) != pdPASS) {
+        s_broker_task = NULL;
+        return ESP_ERR_NO_MEM;
+    }
     if (!s_sub_task) {
-        xTaskCreate(mqtt_sub_task, "mqtt_sub",
-                    4096, NULL, 7, &s_sub_task);
+        if (xTaskCreate(mqtt_sub_task, "mqtt_sub",
+                        4096, NULL, 7, &s_sub_task) != pdPASS) {
+            s_sub_task = NULL;
+            return ESP_ERR_NO_MEM;
+        }
     }
+    return ESP_OK;
 }
 
 bool mqtt_broker_is_running(void)

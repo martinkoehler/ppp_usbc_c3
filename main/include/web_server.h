@@ -27,7 +27,7 @@ extern "C" {
  *  - Provide "/set" POST handler to change AP SSID/pass
  */
 
-void web_server_start(void);
+esp_err_t web_server_start(void);
 void web_server_stop(void);
 void web_server_restart(void);
 bool web_server_health_check(void);

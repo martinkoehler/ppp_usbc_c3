@@ -174,27 +174,34 @@ static void ppp_reconnect_task(void *arg)
     }
 }
 
-void ppp_usb_start(void)
+esp_err_t ppp_usb_start(void)
 {
     if (ppp) {
         ESP_LOGI(TAG, "PPP already started");
-        return;
+        return ESP_OK;
     }
 
     s_event_group = xEventGroupCreate();
-    configASSERT(s_event_group);
+    if (!s_event_group) {
+        return ESP_ERR_NO_MEM;
+    }
 
     usb_serial_jtag_driver_config_t usb_cfg = {
         .tx_buffer_size = 2048,
         .rx_buffer_size = 2048,
     };
-    ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb_cfg));
+    esp_err_t err = usb_serial_jtag_driver_install(&usb_cfg);
+    if (err != ESP_OK) {
+        return err;
+    }
 
     ESP_LOGI(TAG, "Starting PPP over USB Serial/JTAG...");
 
     memset(&ppp_netif, 0, sizeof(ppp_netif));
     ppp = pppapi_pppos_create(&ppp_netif, ppp_output_cb, ppp_status_cb, NULL);
-    configASSERT(ppp);
+    if (!ppp) {
+        return ESP_ERR_NO_MEM;
+    }
 
     /* Apply constrained MRU/MTU */
     ppp_send_config(ppp, PPP_MRU_MTU, 0xFFFFFFFF, 0, 0);
@@ -208,10 +215,13 @@ void ppp_usb_start(void)
     /* Make PPP default route in lwIP */
     pppapi_set_default(ppp);
 
-    xTaskCreate(ppp_usb_rx_task, "ppp_usb_rx", 4096, NULL, 10, NULL);
-    xTaskCreate(ppp_reconnect_task, "ppp_reconn", 4096, NULL, 9, NULL);
+    if (xTaskCreate(ppp_usb_rx_task, "ppp_usb_rx", 4096, NULL, 10, NULL) != pdPASS ||
+        xTaskCreate(ppp_reconnect_task, "ppp_reconn", 4096, NULL, 9, NULL) != pdPASS) {
+        return ESP_ERR_NO_MEM;
+    }
 
     ESP_LOGI(TAG, "PPP will connect when a USB host is detected");
+    return ESP_OK;
 }
 
 bool ppp_is_up(void)

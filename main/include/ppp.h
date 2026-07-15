@@ -10,6 +10,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include "esp_err.h"
 #include "lwip/ip4_addr.h"
 
 #ifdef __cplusplus
@@ -28,7 +29,7 @@ extern "C" {
  *  - Run reconnect loop in background.
  */
 
-void ppp_usb_start(void);
+esp_err_t ppp_usb_start(void);
 
 /** Is PPP link currently up? */
 bool ppp_is_up(void);
@@ -46,4 +47,3 @@ ip4_addr_t ppp_get_ip(void);
 #ifdef __cplusplus
 }
 #endif
-

@@ -90,24 +90,24 @@ static void watchdog_task(void *arg)
     }
 }
 
-void watchdog_start(uint32_t timeout_seconds, uint32_t period_ms)
+esp_err_t watchdog_start(uint32_t timeout_seconds, uint32_t period_ms)
 {
     if (timeout_seconds == 0 || period_ms == 0) {
         ESP_LOGE(TAG, "Invalid watchdog configuration: timeout=%us period=%ums",
                  timeout_seconds, period_ms);
-        return;
+        return ESP_ERR_INVALID_ARG;
     }
 
     if (period_ms >= timeout_seconds * 1000U) {
         ESP_LOGE(TAG,
                  "Watchdog feed period (%ums) must be shorter than timeout (%ums)",
                  period_ms, timeout_seconds * 1000U);
-        return;
+        return ESP_ERR_INVALID_ARG;
     }
 
     if (watchdog_task_handle != NULL) {
         ESP_LOGW(TAG, "Watchdog task already running");
-        return;
+        return ESP_OK;
     }
 
     feed_period_ms = period_ms;
@@ -126,7 +126,7 @@ void watchdog_start(uint32_t timeout_seconds, uint32_t period_ms)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to configure task watchdog: %s",
                  esp_err_to_name(err));
-        return;
+        return err;
     }
 
     BaseType_t rc = xTaskCreate(
@@ -141,7 +141,7 @@ void watchdog_start(uint32_t timeout_seconds, uint32_t period_ms)
     if (rc != pdPASS || watchdog_task_handle == NULL) {
         watchdog_task_handle = NULL;
         ESP_LOGE(TAG, "Failed to create watchdog task");
-        return;
+        return ESP_ERR_NO_MEM;
     }
 
     err = esp_task_wdt_add(watchdog_task_handle);
@@ -150,11 +150,12 @@ void watchdog_start(uint32_t timeout_seconds, uint32_t period_ms)
                  esp_err_to_name(err));
         vTaskDelete(watchdog_task_handle);
         watchdog_task_handle = NULL;
-        return;
+        return err;
     }
 
     ESP_LOGI(TAG, "Watchdog started: timeout=%us feed_period=%ums",
              timeout_seconds, period_ms);
+    return ESP_OK;
 }
 
 void watchdog_deinit(void)

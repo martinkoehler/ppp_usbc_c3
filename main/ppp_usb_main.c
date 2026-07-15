@@ -452,12 +452,12 @@ void app_main(void)
     wifi_init_softap();
 
     /* Start modules */
-    client_rssi_init();     // Initialize client RSSI tracking first
-    web_server_start();
-    mqtt_broker_start();
-    oled_start();
-    ppp_usb_start();
-    watchdog_start(30, 5000); // 30s timeout; watchdog task feeds every 5s
+    ESP_ERROR_CHECK(client_rssi_init()); // Initialize client RSSI tracking first
+    ESP_ERROR_CHECK(web_server_start());
+    ESP_ERROR_CHECK(mqtt_broker_start());
+    ESP_ERROR_CHECK(oled_start());
+    ESP_ERROR_CHECK(ppp_usb_start());
+    ESP_ERROR_CHECK(watchdog_start(30, 5000)); // Feed every 5s with a 30s timeout
 
     /* app_main no longer needs a forever loop:
      * watchdog loop runs in its own task.

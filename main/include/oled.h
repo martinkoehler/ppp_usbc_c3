@@ -11,6 +11,8 @@
  */
 #pragma once
 
+#include "esp_err.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -25,7 +27,7 @@ extern "C" {
  *  - Display latest MQTT OBK power payload.
  */
 
-void oled_start(void);
+esp_err_t oled_start(void);
 void oled_blank_and_reset_screensaver(void);
 
 /** Request the same debug-page toggle as a BOOT-button press. */

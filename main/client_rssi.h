@@ -10,6 +10,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "esp_err.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,7 +29,7 @@ extern "C" {
 /**
  * @brief Initialize client RSSI tracking.
  */
-void client_rssi_init(void);
+esp_err_t client_rssi_init(void);
 
 /**
  * @brief Get RSSI (signal strength) of a specific client by MAC address.

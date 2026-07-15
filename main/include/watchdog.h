@@ -37,6 +37,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "esp_err.h"
 
 /**
  * @brief Start watchdog timer with feed loop in background task.
@@ -44,7 +45,7 @@
  * @param timeout_seconds Watchdog timeout in seconds.
  * @param period_ms Interval between feeds, in milliseconds.
  */
-void watchdog_start(uint32_t timeout_seconds, uint32_t period_ms);
+esp_err_t watchdog_start(uint32_t timeout_seconds, uint32_t period_ms);
 
 /**
  * @brief Stop and deinitialize watchdog feed loop.

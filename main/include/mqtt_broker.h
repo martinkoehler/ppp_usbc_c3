@@ -24,6 +24,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include "esp_err.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -60,7 +61,7 @@ extern "C" {
  * @brief Start MQTT broker in background task.
  * Safe to call multiple times.
  */
-void mqtt_broker_start(void);
+esp_err_t mqtt_broker_start(void);
 
 /**
  * @brief Is broker currently running?
@@ -90,7 +91,7 @@ int mqtt_broker_get_obk_connected_state(void);
  * Must be called once before start if used.
  * app_main calls this early.
  */
-void mqtt_broker_init_telemetry(void);
+esp_err_t mqtt_broker_init_telemetry(void);
 
 #ifdef __cplusplus
 }

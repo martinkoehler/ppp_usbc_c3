@@ -388,7 +388,7 @@ static void oled_task(void *arg)
     }
 }
 
-void oled_start(void)
+esp_err_t oled_start(void)
 {
     oled_button_init();
     u8g2_esp32_hal_t hal = U8G2_ESP32_HAL_DEFAULT;
@@ -414,7 +414,11 @@ void oled_start(void)
     ESP_LOGI(TAG, "OLED init OK. Active window %dx%d @ offset (%d,%d)",
              width, height, xOffset, yOffset);
 
-    xTaskCreate(oled_task, "oled_task", 4096, NULL, 5, NULL);
+    if (xTaskCreate(oled_task, "oled_task", 4096, NULL, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create OLED task");
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
 }
 
 void oled_blank_and_reset_screensaver(void)

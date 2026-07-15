@@ -544,7 +544,10 @@ void web_server_restart(void)
 {
     web_server_stop();
     vTaskDelay(pdMS_TO_TICKS(200));
-    web_server_start();
+    esp_err_t err = web_server_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to restart webserver: %s", esp_err_to_name(err));
+    }
 }
 
 static int hex_value(char c)
@@ -829,11 +832,11 @@ static esp_err_t ota_post_handler(httpd_req_t *req)
  * Server start
  * -------------------------------------------------------------------------- */
 
-void web_server_start(void)
+esp_err_t web_server_start(void)
 {
     if (s_httpd) {
         ESP_LOGI(TAG, "Webserver already running");
-        return;
+        return ESP_OK;
     }
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -845,7 +848,10 @@ void web_server_start(void)
     config.lru_purge_enable = true;
     config.keep_alive_enable = false;
 
-    ESP_ERROR_CHECK(httpd_start(&s_httpd, &config));
+    esp_err_t err = httpd_start(&s_httpd, &config);
+    if (err != ESP_OK) {
+        return err;
+    }
 
     httpd_uri_t root = {
         .uri      = "/",
@@ -853,7 +859,8 @@ void web_server_start(void)
         .handler  = root_get_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(s_httpd, &root);
+    err = httpd_register_uri_handler(s_httpd, &root);
+    if (err != ESP_OK) goto register_failed;
 
     httpd_uri_t set = {
         .uri      = "/set",
@@ -861,7 +868,8 @@ void web_server_start(void)
         .handler  = set_post_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(s_httpd, &set);
+    err = httpd_register_uri_handler(s_httpd, &set);
+    if (err != ESP_OK) goto register_failed;
 
     httpd_uri_t oled_debug = {
         .uri      = "/oled/debug",
@@ -869,7 +877,8 @@ void web_server_start(void)
         .handler  = oled_debug_post_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(s_httpd, &oled_debug);
+    err = httpd_register_uri_handler(s_httpd, &oled_debug);
+    if (err != ESP_OK) goto register_failed;
 
     httpd_uri_t ota = {
         .uri      = "/ota",
@@ -877,7 +886,8 @@ void web_server_start(void)
         .handler  = ota_post_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(s_httpd, &ota);
+    err = httpd_register_uri_handler(s_httpd, &ota);
+    if (err != ESP_OK) goto register_failed;
 
     httpd_uri_t status_all = {
         .uri      = "/status/all",
@@ -885,7 +895,15 @@ void web_server_start(void)
         .handler  = status_all_get_handler,
         .user_ctx = NULL
     };
-    httpd_register_uri_handler(s_httpd, &status_all);
+    err = httpd_register_uri_handler(s_httpd, &status_all);
+    if (err != ESP_OK) goto register_failed;
 
     ESP_LOGI(TAG, "Webserver started on http://%s/", AP_IP_ADDR);
+    return ESP_OK;
+
+register_failed:
+    ESP_LOGE(TAG, "Failed to register HTTP handler: %s", esp_err_to_name(err));
+    httpd_stop(s_httpd);
+    s_httpd = NULL;
+    return err;
 }
