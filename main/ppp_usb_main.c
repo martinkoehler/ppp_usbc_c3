@@ -14,6 +14,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include <string.h>
+#include <ctype.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -375,13 +376,61 @@ char ap_get_health_code(void)
 
 esp_err_t ap_set_credentials_and_restart(const char *ssid, const char *pass, uint8_t channel)
 {
-    esp_err_t err = save_ap_config_to_nvs(ssid, pass, channel);
-    if (err != ESP_OK) return err;
+    if (!ssid || !pass || ssid[0] == 0 || strlen(ssid) > 32 ||
+        channel < AP_MIN_CHANNEL || channel > AP_MAX_CHANNEL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    size_t pass_len = strlen(pass);
+    if (pass_len != 0 && (pass_len < 8 || pass_len > 64)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (pass_len == 64) {
+        for (size_t i = 0; i < pass_len; i++) {
+            if (!isxdigit((unsigned char)pass[i])) {
+                return ESP_ERR_INVALID_ARG;
+            }
+        }
+    }
+
+    char old_ssid[sizeof(g_ap_ssid)];
+    char old_pass[sizeof(g_ap_pass)];
+    uint8_t old_channel = g_ap_channel;
+    strlcpy(old_ssid, g_ap_ssid, sizeof(old_ssid));
+    strlcpy(old_pass, g_ap_pass, sizeof(old_pass));
 
     strlcpy(g_ap_ssid, ssid, sizeof(g_ap_ssid));
     strlcpy(g_ap_pass, pass, sizeof(g_ap_pass));
-    g_ap_channel = sanitize_ap_channel(channel);
-    return apply_ap_config_and_restart();
+    g_ap_channel = channel;
+
+    bool save_attempted = false;
+    esp_err_t err = apply_ap_config_and_restart();
+    if (err == ESP_OK) {
+        save_attempted = true;
+        err = save_ap_config_to_nvs(g_ap_ssid, g_ap_pass, g_ap_channel);
+    }
+    if (err == ESP_OK) {
+        return ESP_OK;
+    }
+
+    ESP_LOGE(TAG, "AP configuration update failed, restoring previous settings: %s",
+             esp_err_to_name(err));
+    strlcpy(g_ap_ssid, old_ssid, sizeof(g_ap_ssid));
+    strlcpy(g_ap_pass, old_pass, sizeof(g_ap_pass));
+    g_ap_channel = old_channel;
+    esp_err_t rollback_err = apply_ap_config_and_restart();
+    if (rollback_err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to restore previous AP settings: %s",
+                 esp_err_to_name(rollback_err));
+    }
+    if (save_attempted) {
+        esp_err_t restore_nvs_err = save_ap_config_to_nvs(
+            old_ssid, old_pass, old_channel);
+        if (restore_nvs_err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to restore previous AP settings in NVS: %s",
+                     esp_err_to_name(restore_nvs_err));
+        }
+    }
+    return err;
 }
 
 esp_err_t ap_restart(void)

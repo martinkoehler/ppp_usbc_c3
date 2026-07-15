@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <ctype.h>
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -137,6 +138,34 @@ static void json_escape(const char *in, char *out, size_t out_len)
     out[o] = 0;
 }
 
+static void html_escape(const char *in, char *out, size_t out_len)
+{
+    size_t used = 0;
+    while (*in && used + 1 < out_len) {
+        const char *replacement = NULL;
+        switch (*in) {
+            case '&': replacement = "&amp;"; break;
+            case '<': replacement = "&lt;"; break;
+            case '>': replacement = "&gt;"; break;
+            case '\"': replacement = "&quot;"; break;
+            case '\'': replacement = "&#39;"; break;
+            default: break;
+        }
+        if (replacement) {
+            size_t replacement_len = strlen(replacement);
+            if (used + replacement_len >= out_len) {
+                break;
+            }
+            memcpy(out + used, replacement, replacement_len);
+            used += replacement_len;
+        } else {
+            out[used++] = *in;
+        }
+        in++;
+    }
+    out[used] = 0;
+}
+
 /* --------------------------------------------------------------------------
  * HTTP Handlers
  * -------------------------------------------------------------------------- */
@@ -159,6 +188,8 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     ppp_get_ip_info(&ppp_ip, &ppp_gw, &ppp_nm);
 
     const char *ssid = ap_get_ssid();
+    char escaped_ssid[256];
+    html_escape(ssid ? ssid : "", escaped_ssid, sizeof(escaped_ssid));
     uint8_t channel = ap_get_channel();
 
     snprintf(page, page_len,
@@ -274,7 +305,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<tbody id='clientTableBody'><tr><td colspan='3'>Loading...</td></tr></tbody></table><hr>",
         AJAX_REFRESH_SEC,
         IP2STR(&ppp_ip), IP2STR(&ppp_gw), IP2STR(&ppp_nm),
-        ssid ? ssid : "", channel, channel
+        escaped_ssid, channel, channel
     );
 
     strlcat(page, "</body></html>", page_len);
@@ -516,45 +547,116 @@ void web_server_restart(void)
     web_server_start();
 }
 
-/* Minimal URL decode (in-place), as in original */
-static void url_decode_inplace(char *s)
+static int hex_value(char c)
 {
-    char *p = s, *q = s;
-    while (*p) {
-        if (*p == '+') {
-            *q++ = ' ';
-            p++;
-        } else if (*p == '%' && p[1] && p[2]) {
-            char hex[3] = { p[1], p[2], 0 };
-            *q++ = (char)strtol(hex, NULL, 16);
-            p += 3;
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool url_decode_component(const char *src, size_t src_len,
+                                 char *out, size_t out_len)
+{
+    size_t written = 0;
+    for (size_t i = 0; i < src_len; i++) {
+        char value;
+        if (src[i] == '+') {
+            value = ' ';
+        } else if (src[i] == '%') {
+            if (i + 2 >= src_len) {
+                return false;
+            }
+            int high = hex_value(src[i + 1]);
+            int low = hex_value(src[i + 2]);
+            if (high < 0 || low < 0) {
+                return false;
+            }
+            value = (char)((high << 4) | low);
+            i += 2;
+            if (value == 0) {
+                return false;
+            }
         } else {
-            *q++ = *p++;
+            value = src[i];
         }
+
+        if (written + 1 >= out_len) {
+            return false;
+        }
+        out[written++] = value;
     }
-    *q = 0;
+    out[written] = 0;
+    return true;
 }
 
 static bool parse_form_field(const char *buf, const char *key, char *out, size_t out_len)
 {
-    char pattern[24];
-    snprintf(pattern, sizeof(pattern), "%s=", key);
+    size_t key_len = strlen(key);
+    const char *field = buf;
 
-    char *value = strstr(buf, pattern);
-    if (!value || out_len == 0) {
+    while (*field) {
+        const char *end = strchr(field, '&');
+        if (!end) {
+            end = field + strlen(field);
+        }
+        const char *equals = memchr(field, '=', (size_t)(end - field));
+        if (equals && (size_t)(equals - field) == key_len &&
+            memcmp(field, key, key_len) == 0) {
+            return url_decode_component(equals + 1, (size_t)(end - equals - 1),
+                                        out, out_len);
+        }
+        field = *end ? end + 1 : end;
+    }
+    return false;
+}
+
+static esp_err_t receive_request_body(httpd_req_t *req, char *buf, size_t buf_size)
+{
+    if (req->content_len <= 0 || (size_t)req->content_len >= buf_size) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid form size");
+        return ESP_FAIL;
+    }
+
+    size_t received = 0;
+    unsigned timeout_count = 0;
+    while (received < (size_t)req->content_len) {
+        int len = httpd_req_recv(req, buf + received,
+                                 (size_t)req->content_len - received);
+        if (len == HTTPD_SOCK_ERR_TIMEOUT) {
+            if (++timeout_count >= 3) {
+                httpd_resp_send_err(req, HTTPD_408_REQ_TIMEOUT,
+                                    "Timed out receiving form data");
+                return ESP_FAIL;
+            }
+            continue;
+        }
+        if (len <= 0) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                "Incomplete form data");
+            return ESP_FAIL;
+        }
+        timeout_count = 0;
+        received += (size_t)len;
+    }
+    buf[received] = 0;
+    return ESP_OK;
+}
+
+static bool valid_wpa_password(const char *pass)
+{
+    size_t len = strlen(pass);
+    if (len == 0 || (len >= 8 && len <= 63)) {
+        return true;
+    }
+    if (len != 64) {
         return false;
     }
-
-    value += strlen(pattern);
-    char *end = strchr(value, '&');
-    size_t n = end ? (size_t)(end - value) : strlen(value);
-    if (n >= out_len) {
-        n = out_len - 1;
+    for (size_t i = 0; i < len; i++) {
+        if (!isxdigit((unsigned char)pass[i])) {
+            return false;
+        }
     }
-
-    memcpy(out, value, n);
-    out[n] = 0;
-    url_decode_inplace(out);
     return true;
 }
 
@@ -564,22 +666,22 @@ static esp_err_t set_post_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    char buf[256];
-    int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (len <= 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No data");
+    char buf[512];
+    if (receive_request_body(req, buf, sizeof(buf)) != ESP_OK) {
         return ESP_FAIL;
     }
-    buf[len] = 0;
 
     char ssid[33] = {0};
     char pass[65] = {0};
     char channel_raw[4] = {0};
     char open_raw[2] = {0};
 
-    parse_form_field(buf, "ssid", ssid, sizeof(ssid));
-    parse_form_field(buf, "pass", pass, sizeof(pass));
-    parse_form_field(buf, "channel", channel_raw, sizeof(channel_raw));
+    if (!parse_form_field(buf, "ssid", ssid, sizeof(ssid)) ||
+        !parse_form_field(buf, "pass", pass, sizeof(pass)) ||
+        !parse_form_field(buf, "channel", channel_raw, sizeof(channel_raw))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid form data");
+        return ESP_FAIL;
+    }
     bool open_network = parse_form_field(buf, "open", open_raw, sizeof(open_raw)) &&
                         strcmp(open_raw, "1") == 0;
 
@@ -596,8 +698,9 @@ static esp_err_t set_post_handler(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "SSID must not be empty");
         return ESP_FAIL;
     }
-    if (strlen(pass) > 0 && strlen(pass) < 8) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Password must be >=8 or empty");
+    if (!valid_wpa_password(pass)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "Password must be empty, 8-63 characters, or 64 hex digits");
         return ESP_FAIL;
     }
     if (channel_raw[0] == 0 || endptr == channel_raw || *endptr != '\0' ||
@@ -610,7 +713,9 @@ static esp_err_t set_post_handler(httpd_req_t *req)
 
     esp_err_t err = ap_set_credentials_and_restart(ssid, pass, (uint8_t)channel);
     if (err != ESP_OK) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS save failed");
+        ESP_LOGE(TAG, "Failed to apply AP configuration: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "AP configuration was not changed");
         return ESP_FAIL;
     }
 

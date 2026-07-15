@@ -55,7 +55,7 @@ bool ap_is_running(void);
 char ap_get_health_code(void);
 
 /**
- * @brief Save new AP credentials to NVS and restart AP.
+ * @brief Apply new AP credentials, persist them, or restore the old settings.
  *
  * @param ssid New SSID (validated already)
  * @param pass New password (empty allowed, or >=8 chars)
