@@ -36,6 +36,16 @@ typedef struct {
 static sta_rssi_entry_t sta_rssi_list[MAX_STA_CLIENTS];
 static uint8_t sta_count = 0;
 static SemaphoreHandle_t rssi_mutex = NULL;
+static TaskHandle_t rssi_task_handle = NULL;
+
+static void clear_rssi_snapshot(void)
+{
+    if (xSemaphoreTake(rssi_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        memset(sta_rssi_list, 0, sizeof(sta_rssi_list));
+        sta_count = 0;
+        xSemaphoreGive(rssi_mutex);
+    }
+}
 
 /* -------------------- RSSI Monitoring Task -------------------- */
 
@@ -48,6 +58,7 @@ static void rssi_update_task(void *arg)
 
         wifi_sta_list_t sta_list = {0};
         if (esp_wifi_ap_get_sta_list(&sta_list) != ESP_OK) {
+            clear_rssi_snapshot();
             continue;
         }
 
@@ -76,6 +87,10 @@ static void rssi_update_task(void *arg)
 
 esp_err_t client_rssi_init(void)
 {
+    if (rssi_task_handle) {
+        return ESP_OK;
+    }
+
     if (!rssi_mutex) {
         rssi_mutex = xSemaphoreCreateMutex();
         if (!rssi_mutex) {
@@ -87,7 +102,8 @@ esp_err_t client_rssi_init(void)
     sta_count = 0;
 
     if (xTaskCreate(rssi_update_task, "rssi_update",
-                    4096, NULL, 6, NULL) != pdPASS) {
+                    4096, NULL, 6, &rssi_task_handle) != pdPASS) {
+        rssi_task_handle = NULL;
         ESP_LOGE(TAG, "Failed to create RSSI update task");
         return ESP_ERR_NO_MEM;
     }
