@@ -41,6 +41,9 @@ static struct netif ppp_netif;
 static EventGroupHandle_t s_event_group;
 #define PPP_CONNECTED_BIT BIT0
 #define PPP_DISCONN_BIT   BIT1
+#define PPP_RECONNECT_DELAY_MS 2000
+#define PPP_USB_POLL_MS 250
+#define PPP_USB_TX_WAIT_MS 10
 
 static bool s_ppp_up = false;
 
@@ -53,6 +56,11 @@ static void ppp_usb_rx_task(void *arg)
     uint8_t buf[256];
 
     while (1) {
+        if (!usb_serial_jtag_is_connected()) {
+            vTaskDelay(pdMS_TO_TICKS(PPP_USB_POLL_MS));
+            continue;
+        }
+
         int n = usb_serial_jtag_read_bytes(buf, sizeof(buf), pdMS_TO_TICKS(100));
         if (n > 0 && ppp) {
             pppos_input_tcpip(ppp, buf, n);
@@ -68,9 +76,15 @@ static u32_t ppp_output_cb(ppp_pcb *pcb, const void *data, u32_t len, void *ctx)
 {
     (void)pcb; (void)ctx;
 
-    int written = usb_serial_jtag_write_bytes(data, len, pdMS_TO_TICKS(1000));
-    if (written < 0) {
-        ESP_LOGW(TAG, "USB write error");
+    if (!usb_serial_jtag_is_connected()) {
+        return 0;
+    }
+
+    int written = usb_serial_jtag_write_bytes(
+        data, len, pdMS_TO_TICKS(PPP_USB_TX_WAIT_MS));
+    if (written != (int)len) {
+        ESP_LOGD(TAG, "USB TX unavailable, dropped PPP frame (%lu bytes)",
+                 (unsigned long)len);
         return 0;
     }
     return (u32_t)written;
@@ -121,25 +135,42 @@ static void ppp_status_cb(ppp_pcb *pcb, int err_code, void *ctx)
 static void ppp_reconnect_task(void *arg)
 {
     (void)arg;
+    bool connect_requested = false;
+    TickType_t retry_after = 0;
 
     while (1) {
-        EventBits_t bits = xEventGroupWaitBits(
+        bool usb_connected = usb_serial_jtag_is_connected();
+        EventBits_t bits = xEventGroupClearBits(
             s_event_group,
-            PPP_CONNECTED_BIT | PPP_DISCONN_BIT,
-            pdTRUE,
-            pdFALSE,
-            portMAX_DELAY
-        );
+            PPP_CONNECTED_BIT | PPP_DISCONN_BIT);
 
         if (bits & PPP_CONNECTED_BIT) {
             ESP_LOGI(TAG, "PPP link up; routing between AP <-> PPP active.");
         }
 
         if (bits & PPP_DISCONN_BIT) {
-            ESP_LOGW(TAG, "PPP link down, reconnecting in 2s...");
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            pppapi_connect(ppp, 0);
+            connect_requested = false;
+            retry_after = xTaskGetTickCount() + pdMS_TO_TICKS(PPP_RECONNECT_DELAY_MS);
+            if (usb_connected) {
+                ESP_LOGW(TAG, "PPP link down, retrying while USB host is present");
+            }
         }
+
+        if (!usb_connected) {
+            if (connect_requested) {
+                ESP_LOGI(TAG, "USB host disconnected; closing PPP link");
+                pppapi_close(ppp, 1);
+                connect_requested = false;
+            }
+            s_ppp_up = false;
+        } else if (!connect_requested &&
+                   (int32_t)(xTaskGetTickCount() - retry_after) >= 0) {
+            ESP_LOGI(TAG, "USB host detected; starting PPP negotiation");
+            pppapi_connect(ppp, 0);
+            connect_requested = true;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(PPP_USB_POLL_MS));
     }
 }
 
@@ -180,7 +211,7 @@ void ppp_usb_start(void)
     xTaskCreate(ppp_usb_rx_task, "ppp_usb_rx", 4096, NULL, 10, NULL);
     xTaskCreate(ppp_reconnect_task, "ppp_reconn", 4096, NULL, 9, NULL);
 
-    pppapi_connect(ppp, 0);
+    ESP_LOGI(TAG, "PPP will connect when a USB host is detected");
 }
 
 bool ppp_is_up(void)
