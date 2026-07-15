@@ -194,7 +194,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    const size_t page_len = 8192;
+    const size_t page_len = 10240;
     char *page = (char *)malloc(page_len);
     if (!page) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
@@ -206,8 +206,8 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     ppp_get_ip_info(&ppp_ip, &ppp_gw, &ppp_nm);
 
     char ssid[33];
-    uint8_t channel;
-    ap_get_config_snapshot(ssid, sizeof(ssid), NULL, 0, &channel);
+    ap_channel_status_t channel_status;
+    ap_get_config_snapshot(ssid, sizeof(ssid), NULL, 0, &channel_status);
     char escaped_ssid[256];
     html_escape(ssid, escaped_ssid, sizeof(escaped_ssid));
 
@@ -237,6 +237,13 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "function schedule(ms){if(timer){clearTimeout(timer);}timer=setTimeout(tick,ms);}"
         "function setText(id,val){var el=document.getElementById(id);if(el)el.textContent=val;}"
         "function setHtml(id,val){var el=document.getElementById(id);if(el)el.innerHTML=val;}"
+        "window.toggleManualChannel=function(){"
+        "var auto=document.getElementById('channelAuto');"
+        "var row=document.getElementById('manualChannelRow');"
+        "var input=document.getElementById('manualChannel');"
+        "if(!auto||!row||!input){return;}"
+        "row.style.display=auto.checked?'none':'block';input.disabled=auto.checked;"
+        "};"
         "function refreshPanels(){"
         "if(otaInProgress){return Promise.resolve();}"
         "return fetch('/status/all').then(function(resp){return resp.json();}).then(function(data){"
@@ -253,6 +260,10 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "setText('mqttApUri',data.mqtt.ap_uri||'');"
         "setText('mqttPppUri',data.mqtt.ppp_up?data.mqtt.ppp_uri:'PPP not up yet.');"
         "setText('apChannel',data.ap.channel||'');"
+        "setText('channelMode',data.ap.channel_auto?'Automatic':'Manual');"
+        "var scan=data.ap.scan_in_progress?'Scanning...':data.ap.last_scan;"
+        "if(data.ap.last_scan_age_sec!==null&&!data.ap.scan_in_progress){scan+=' ('+data.ap.last_scan_age_sec+'s ago)';}"
+        "setText('channelScan',scan);"
         "setText('pppIp',data.ppp.ip||'0.0.0.0');"
         "setText('pppGw',data.ppp.gw||'0.0.0.0');"
         "setText('pppNm',data.ppp.nm||'0.0.0.0');"
@@ -285,7 +296,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         ".then(function(result){if(result.ok){statusEl.textContent='Upload complete. Device will reboot shortly.';}else{otaInProgress=false;updateBadge();statusEl.textContent='OTA failed: '+result.text;}})"
         ".catch(function(err){otaInProgress=false;updateBadge();statusEl.textContent='OTA failed: '+err;});"
         "};"
-        "updateBadge();"
+        "document.addEventListener('DOMContentLoaded',window.toggleManualChannel);updateBadge();"
         "})();</script>"
         "<style>body{font-family:sans-serif;margin:20px;}table{border-collapse:collapse;}th,td{border:1px solid #ccc;padding:6px 10px;}input{padding:6px;margin:4px 0;}</style>"
         "</head><body>"
@@ -298,8 +309,9 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<form method='POST' action='/set'>SSID:<br><input name='ssid' maxlength='32' value='%s'><br>"
         "Password:<br><input type='password' name='pass' maxlength='64' value='' placeholder='Leave blank to keep current'><br>"
         "<label><input type='checkbox' name='open' value='1'> Use an open network</label><br>"
-        "Channel:<br><input name='channel' type='number' min='1' max='11' step='1' value='%u'><br>"
-        "<small>Leave password blank to keep it unchanged. WPA2 requires ≥8 chars. Valid Wi-Fi channels: 1 to 11.</small><br><br>"
+        "<label><input id='channelAuto' type='checkbox' name='channel_auto' value='1' onchange='toggleManualChannel()'%s> Automatically select channel</label><br>"
+        "<div id='manualChannelRow'>Channel:<br><input id='manualChannel' name='channel' type='number' min='1' max='11' step='1' value='%u'></div>"
+        "<small>Automatic selection scans after one idle minute and only rescans after the AP has been idle. Leave password blank to keep it unchanged.</small><br><br>"
         "<input type='submit' value='Save & Restart AP'></form><hr>"
         "<h3>OLED Diagnostics</h3>"
         "<form method='POST' action='/oled/debug'><button type='submit'>Toggle Debug Page</button></form>"
@@ -317,6 +329,8 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<p><b>Latest " OBK_POWER_TOPIC ":</b> <code id='obkPower'></code></p>"
         "<p><b>OBK connected:</b> <span id='obkConn'></span></p>"
         "<p><b>Current AP channel:</b> <span id='apChannel'>%u</span></p>"
+        "<p><b>Channel selection:</b> <span id='channelMode'>%s</span><br>"
+        "<b>Last automatic scan:</b> <span id='channelScan'>%s</span></p>"
         "<p><b>Connect from WiFi AP clients:</b><br><code id='mqttApUri'></code></p>"
         "<p><b>Connect from Linux PC over PPP:</b><br><code id='mqttPppUri'></code></p><hr>"
         "<h3>Connected Clients</h3>"
@@ -324,7 +338,13 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<tbody id='clientTableBody'><tr><td colspan='3'>Loading...</td></tr></tbody></table><hr>",
         AJAX_REFRESH_SEC,
         IP2STR(&ppp_ip), IP2STR(&ppp_gw), IP2STR(&ppp_nm),
-        escaped_ssid, channel, channel
+        escaped_ssid,
+        channel_status.channel_auto ? " checked" : "",
+        channel_status.manual_channel,
+        channel_status.active_channel,
+        channel_status.channel_auto ? "Automatic" : "Manual",
+        channel_status.last_scan_time_us == 0 ? "Never" :
+            esp_err_to_name(channel_status.last_scan_result)
     );
 
     strlcat(page, "</body></html>", page_len);
@@ -367,8 +387,18 @@ static esp_err_t status_all_get_handler(httpd_req_t *req)
 
     char mqtt_ppp_uri[64];
     bool ppp_up = (ppp_ip.addr != 0);
-    uint8_t ap_channel;
-    ap_get_config_snapshot(NULL, 0, NULL, 0, &ap_channel);
+    ap_channel_status_t channel_status;
+    ap_get_config_snapshot(NULL, 0, NULL, 0, &channel_status);
+    int64_t scan_age_sec = channel_status.last_scan_time_us > 0
+        ? (esp_timer_get_time() - channel_status.last_scan_time_us) / 1000000
+        : -1;
+    char scan_age_json[24];
+    if (scan_age_sec < 0) {
+        strlcpy(scan_age_json, "null", sizeof(scan_age_json));
+    } else {
+        snprintf(scan_age_json, sizeof(scan_age_json), "%lld",
+                 (long long)scan_age_sec);
+    }
     if (ppp_ip.addr != 0) {
         snprintf(mqtt_ppp_uri, sizeof(mqtt_ppp_uri), "mqtt://%s:%d",
                  ip4addr_ntoa(&ppp_ip), MQTT_BROKER_PORT);
@@ -378,7 +408,7 @@ static esp_err_t status_all_get_handler(httpd_req_t *req)
 
     snprintf(page, page_len,
              "{"
-             "\"schema_version\":1,"
+             "\"schema_version\":2,"
              "\"mqtt\":{"
              "\"running\":%s,"
              "\"port\":%d,"
@@ -391,7 +421,12 @@ static esp_err_t status_all_get_handler(httpd_req_t *req)
              "\"ppp_up\":%s"
              "},"
              "\"ap\":{"
-             "\"channel\":%u"
+             "\"channel\":%u,"
+             "\"channel_auto\":%s,"
+             "\"manual_channel\":%u,"
+             "\"scan_in_progress\":%s,"
+             "\"last_scan\":\"%s\","
+             "\"last_scan_age_sec\":%s"
              "},"
              "\"ppp\":{"
              "\"ip\":\"" IPSTR "\","
@@ -408,7 +443,13 @@ static esp_err_t status_all_get_handler(httpd_req_t *req)
              mqtt_ap_uri,
              mqtt_ppp_uri,
              ppp_up ? "true" : "false",
-             ap_channel,
+             channel_status.active_channel,
+             channel_status.channel_auto ? "true" : "false",
+             channel_status.manual_channel,
+             channel_status.scan_in_progress ? "true" : "false",
+             channel_status.last_scan_time_us == 0 ? "Never" :
+                 esp_err_to_name(channel_status.last_scan_result),
+             scan_age_json,
              IP2STR(&ppp_ip), IP2STR(&ppp_gw), IP2STR(&ppp_nm));
 
     wifi_sta_list_t sta_list = {0};
@@ -744,15 +785,19 @@ static esp_err_t set_post_handler(httpd_req_t *req)
     char pass[65] = {0};
     char channel_raw[4] = {0};
     char open_raw[2] = {0};
+    char channel_auto_raw[2] = {0};
 
     if (!parse_form_field(buf, "ssid", ssid, sizeof(ssid)) ||
-        !parse_form_field(buf, "pass", pass, sizeof(pass)) ||
-        !parse_form_field(buf, "channel", channel_raw, sizeof(channel_raw))) {
+        !parse_form_field(buf, "pass", pass, sizeof(pass))) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid form data");
         return ESP_FAIL;
     }
     bool open_network = parse_form_field(buf, "open", open_raw, sizeof(open_raw)) &&
                         strcmp(open_raw, "1") == 0;
+    bool channel_auto = parse_form_field(buf, "channel_auto",
+                                         channel_auto_raw,
+                                         sizeof(channel_auto_raw)) &&
+                        strcmp(channel_auto_raw, "1") == 0;
 
     if (!open_network && pass[0] == 0) {
         ap_get_config_snapshot(NULL, 0, pass, sizeof(pass), NULL);
@@ -760,8 +805,19 @@ static esp_err_t set_post_handler(httpd_req_t *req)
         pass[0] = 0;
     }
 
+    ap_channel_status_t current_channel_status;
+    ap_get_config_snapshot(NULL, 0, NULL, 0, &current_channel_status);
+    long channel = current_channel_status.manual_channel;
     char *endptr = NULL;
-    long channel = strtol(channel_raw, &endptr, 10);
+    if (!channel_auto) {
+        if (!parse_form_field(buf, "channel", channel_raw,
+                              sizeof(channel_raw))) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                "Manual channel is required");
+            return ESP_FAIL;
+        }
+        channel = strtol(channel_raw, &endptr, 10);
+    }
 
     if (strlen(ssid) == 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "SSID must not be empty");
@@ -772,15 +828,19 @@ static esp_err_t set_post_handler(httpd_req_t *req)
                             "Password must be empty, 8-63 characters, or 64 hex digits");
         return ESP_FAIL;
     }
-    if (channel_raw[0] == 0 || endptr == channel_raw || *endptr != '\0' ||
-        channel < AP_MIN_CHANNEL || channel > AP_MAX_CHANNEL) {
+    if (!channel_auto &&
+        (channel_raw[0] == 0 || endptr == channel_raw || *endptr != '\0' ||
+         channel < AP_MIN_CHANNEL || channel > AP_MAX_CHANNEL)) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Channel must be between 1 and 11");
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "New AP config: SSID='%s' PASS len=%d CH=%ld", ssid, (int)strlen(pass), channel);
+    ESP_LOGI(TAG, "New AP config: SSID='%s' PASS len=%d mode=%s CH=%ld",
+             ssid, (int)strlen(pass), channel_auto ? "auto" : "manual",
+             channel);
 
-    esp_err_t err = ap_set_credentials_and_restart(ssid, pass, (uint8_t)channel);
+    esp_err_t err = ap_set_credentials_and_restart(
+        ssid, pass, channel_auto, (uint8_t)channel);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to apply AP configuration: %s", esp_err_to_name(err));
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,

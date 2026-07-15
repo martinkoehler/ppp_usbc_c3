@@ -31,10 +31,19 @@ extern "C" {
  *  - access ap_netif for DHCP station listing
  */
 
+typedef struct {
+    bool channel_auto;
+    uint8_t active_channel;
+    uint8_t manual_channel;
+    bool scan_in_progress;
+    esp_err_t last_scan_result;
+    int64_t last_scan_time_us;
+} ap_channel_status_t;
+
 /** Copy a consistent snapshot of the current AP configuration. */
 void ap_get_config_snapshot(char *ssid, size_t ssid_len,
                             char *pass, size_t pass_len,
-                            uint8_t *channel);
+                            ap_channel_status_t *channel_status);
 
 /** AP netif handle (for DHCP client lookup). */
 esp_netif_t *ap_get_netif(void);
@@ -56,10 +65,13 @@ char ap_get_health_code(void);
  *
  * @param ssid New SSID (validated already)
  * @param pass New password (empty allowed, or >=8 chars)
- * @param channel New 2.4 GHz Wi-Fi channel
+ * @param channel_auto Select the least congested channel automatically
+ * @param manual_channel Manual 2.4 GHz channel, used when auto selection is off
  * @return ESP_OK on success
  */
-esp_err_t ap_set_credentials_and_restart(const char *ssid, const char *pass, uint8_t channel);
+esp_err_t ap_set_credentials_and_restart(const char *ssid, const char *pass,
+                                         bool channel_auto,
+                                         uint8_t manual_channel);
 
 /**
  * @brief Restart AP using current in-memory credentials.

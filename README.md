@@ -31,7 +31,7 @@ sudo pppd /dev/ttyACM0 file ./options.usb-esp32 nodetach
 sudo ip route add 192.168.4.0/24 via 192.168.178.50 dev ppp0
 ```
 
-You can now access the ESP32 Webserver via http://192.168.178.50 in order to configure the SSID, password, and Wi-Fi channel.
+You can now access the ESP32 Webserver via http://192.168.178.50 in order to configure the SSID, password, and Wi-Fi channel selection.
 After "Save & Restart AP" clients can connect to the ESP32 using this data.
 
 The Webserver shows the IP of connected client. Due to the `route add` command, these clients can be reached directly from the host (e.g. http://192.168.4.3)
@@ -90,11 +90,20 @@ use the SoftAP address (`http://192.168.4.1/ota`) instead.
 - SoftAP SSID: `ESP32C3-PPP-AP`
 - SoftAP password: `12345678`
 - SoftAP IP: `192.168.4.1`
-- SoftAP channel: `11`
+- SoftAP channel selection: automatic (channels `1`, `6`, or `11`; channel `11` is the initial fallback)
 - SoftAP max clients: `4`
 - MQTT broker port: `1883`
 
 PPP IP is configured in the options.usb-esp32 file; the web UI shows the current PPP IP/GW/NM when connected.
+
+Automatic channel selection starts the SoftAP immediately on its saved fallback
+channel. The first scan is deferred until the AP has remained unused for one
+minute, so scan failures can never prevent startup or disrupt a client that
+connects after boot. It checks again at most every six hours and only after no
+Wi-Fi clients have been connected for five minutes. A channel change requires
+a meaningfully better interference score. Automatic selection can be disabled
+in the web UI; the manual channel field is shown only in manual mode and accepts
+channels 1 through 11.
 
 ## MQTT Topics (OBK)
 

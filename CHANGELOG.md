@@ -1,5 +1,18 @@
 # Change Log
 
+## 2026-07-16 — Automatic Wi-Fi channel selection
+
+- Enabled automatic SoftAP channel selection by default using weighted scans
+  of the non-overlapping 2.4 GHz channels 1, 6, and 11.
+- Added idle-only periodic rescans with a six-hour minimum interval, a
+  five-minute client-free window, and hysteresis before changing channels.
+- Added web controls for automatic/manual selection and live reporting of the
+  active channel and last scan result. Manual channel entry is shown only when
+  automatic selection is disabled.
+- Made the AP start on its saved fallback before scanning, with a dedicated STA
+  network interface, non-fatal scan handling, and a one-minute idle delay before
+  the first scan, so scan setup cannot suppress the SoftAP during startup.
+
 ## 2026-07-16 — 128×64 OLED layout
 
 - Updated the OLED geometry to use the full 128×64 display for the

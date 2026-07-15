@@ -15,12 +15,14 @@
  */
 #include <string.h>
 #include <ctype.h>
+#include <stdlib.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_system.h"
@@ -43,6 +45,7 @@
 #define DEFAULT_AP_SSID     "ESP32C3-PPP-AP"
 #define DEFAULT_AP_PASS     "12345678"
 #define DEFAULT_AP_CHANNEL  11
+#define DEFAULT_CHANNEL_AUTO true
 #define AP_MAX_CONN         4
 #define AP_MIN_CHANNEL      1
 #define AP_MAX_CHANNEL      11
@@ -50,6 +53,10 @@
 #define AP_COUNTRY_SCHAN    1
 #define AP_COUNTRY_NCHAN    11
 #define AP_MAX_TX_POWER_QDBM 80
+#define AUTO_SCAN_INTERVAL_US (6LL * 60LL * 60LL * 1000000LL)
+#define AUTO_SCAN_IDLE_US     (5LL * 60LL * 1000000LL)
+#define AUTO_INITIAL_SCAN_IDLE_US (60LL * 1000000LL)
+#define AUTO_SCAN_POLL_MS     (60 * 1000)
 
 #define AP_IP_ADDR     "192.168.4.1"
 #define AP_GATEWAY     "192.168.4.1"
@@ -60,6 +67,8 @@
 #define NVS_KEY_SSID "ssid"
 #define NVS_KEY_PASS "pass"
 #define NVS_KEY_CHANNEL "channel"
+#define NVS_KEY_CHANNEL_AUTO "auto_chan"
+#define NVS_KEY_LAST_AUTO_CHANNEL "last_auto"
 
 /* ------------------------- module state ------------------------- */
 static const char *TAG = "ppp_usb_ap_web";
@@ -67,12 +76,23 @@ static const char *TAG = "ppp_usb_ap_web";
 static char g_ap_ssid[33] = DEFAULT_AP_SSID;
 static char g_ap_pass[65] = DEFAULT_AP_PASS;
 static uint8_t g_ap_channel = DEFAULT_AP_CHANNEL;
+static uint8_t g_manual_channel = DEFAULT_AP_CHANNEL;
+static uint8_t g_last_auto_channel = DEFAULT_AP_CHANNEL;
+static bool g_channel_auto = DEFAULT_CHANNEL_AUTO;
+static bool g_scan_in_progress = false;
+static esp_err_t g_last_scan_result = ESP_ERR_INVALID_STATE;
+static int64_t g_last_scan_time_us = 0;
+static int64_t g_last_client_activity_us = 0;
 static esp_netif_t *ap_netif = NULL;
+static esp_netif_t *sta_netif = NULL;
 static bool ap_started = false;
 static SemaphoreHandle_t ap_config_mutex = NULL;
 static portMUX_TYPE ap_state_lock = portMUX_INITIALIZER_UNLOCKED;
 
-static esp_err_t save_ap_config_to_nvs(const char *ssid, const char *pass, uint8_t channel);
+static esp_err_t save_ap_config_to_nvs(const char *ssid, const char *pass,
+                                       bool channel_auto,
+                                       uint8_t manual_channel,
+                                       uint8_t active_channel);
 
 static uint8_t sanitize_ap_channel(uint8_t channel)
 {
@@ -90,7 +110,6 @@ static void load_ap_config_from_nvs(void)
 {
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(NVS_NS, NVS_READONLY, &nvs);
-    bool repair_channel = false;
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "No NVS namespace yet, using defaults");
         return;
@@ -112,34 +131,38 @@ static void load_ap_config_from_nvs(void)
     uint8_t channel = DEFAULT_AP_CHANNEL;
     err = nvs_get_u8(nvs, NVS_KEY_CHANNEL, &channel);
     if (err == ESP_OK) {
-        g_ap_channel = sanitize_ap_channel(channel);
-        if (g_ap_channel != channel) {
-            repair_channel = true;
-            ESP_LOGW(TAG, "Invalid AP channel %u in NVS, forcing channel %u",
-                     channel, g_ap_channel);
-        }
-    } else {
-        g_ap_channel = DEFAULT_AP_CHANNEL;
-        repair_channel = true;
+        g_manual_channel = sanitize_ap_channel(channel);
     }
+
+    uint8_t channel_auto = DEFAULT_CHANNEL_AUTO ? 1 : 0;
+    if (nvs_get_u8(nvs, NVS_KEY_CHANNEL_AUTO, &channel_auto) == ESP_OK) {
+        g_channel_auto = channel_auto != 0;
+    }
+
+    uint8_t last_auto_channel = DEFAULT_AP_CHANNEL;
+    if (nvs_get_u8(nvs, NVS_KEY_LAST_AUTO_CHANNEL,
+                   &last_auto_channel) == ESP_OK) {
+        last_auto_channel = sanitize_ap_channel(last_auto_channel);
+    }
+    g_last_auto_channel = last_auto_channel;
+    g_ap_channel = g_channel_auto ? g_last_auto_channel : g_manual_channel;
 
     nvs_close(nvs);
 
-    if (repair_channel) {
-        err = save_ap_config_to_nvs(g_ap_ssid, g_ap_pass, g_ap_channel);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to repair AP channel in NVS: %s", esp_err_to_name(err));
-        }
-    }
-
-    ESP_LOGI(TAG, "Loaded AP config from NVS: SSID='%s' PASS len=%d CH=%u",
-             g_ap_ssid, (int)strlen(g_ap_pass), g_ap_channel);
+    ESP_LOGI(TAG, "Loaded AP config: SSID='%s' PASS len=%d mode=%s CH=%u manual=%u",
+             g_ap_ssid, (int)strlen(g_ap_pass),
+             g_channel_auto ? "auto" : "manual", g_ap_channel,
+             g_manual_channel);
 }
 
-static esp_err_t save_ap_config_to_nvs(const char *ssid, const char *pass, uint8_t channel)
+static esp_err_t save_ap_config_to_nvs(const char *ssid, const char *pass,
+                                       bool channel_auto,
+                                       uint8_t manual_channel,
+                                       uint8_t active_channel)
 {
     nvs_handle_t nvs;
-    channel = sanitize_ap_channel(channel);
+    manual_channel = sanitize_ap_channel(manual_channel);
+    active_channel = sanitize_ap_channel(active_channel);
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &nvs);
     if (err != ESP_OK) return err;
 
@@ -149,11 +172,153 @@ static esp_err_t save_ap_config_to_nvs(const char *ssid, const char *pass, uint8
     err = nvs_set_str(nvs, NVS_KEY_PASS, pass);
     if (err != ESP_OK) { nvs_close(nvs); return err; }
 
-    err = nvs_set_u8(nvs, NVS_KEY_CHANNEL, channel);
+    err = nvs_set_u8(nvs, NVS_KEY_CHANNEL, manual_channel);
+    if (err != ESP_OK) { nvs_close(nvs); return err; }
+
+    err = nvs_set_u8(nvs, NVS_KEY_CHANNEL_AUTO, channel_auto ? 1 : 0);
+    if (err != ESP_OK) { nvs_close(nvs); return err; }
+
+    err = nvs_set_u8(nvs, NVS_KEY_LAST_AUTO_CHANNEL,
+                     channel_auto ? active_channel : g_last_auto_channel);
     if (err != ESP_OK) { nvs_close(nvs); return err; }
 
     err = nvs_commit(nvs);
     nvs_close(nvs);
+    if (err == ESP_OK && channel_auto) {
+        g_last_auto_channel = active_channel;
+    }
+    return err;
+}
+
+static uint32_t rssi_weight(int8_t rssi)
+{
+    if (rssi >= -50) return 100;
+    if (rssi >= -60) return 50;
+    if (rssi >= -70) return 20;
+    if (rssi >= -80) return 5;
+    return 1;
+}
+
+static uint32_t overlap_weight(uint8_t candidate, uint8_t primary)
+{
+    unsigned distance = candidate > primary ? candidate - primary
+                                             : primary - candidate;
+    static const uint8_t overlap[] = {100, 75, 50, 25, 10};
+    return distance < sizeof(overlap) ? overlap[distance] : 0;
+}
+
+static uint8_t choose_best_channel(const wifi_ap_record_t *records,
+                                   uint16_t record_count,
+                                   bool use_hysteresis)
+{
+    static const uint8_t candidates[] = {1, 6, 11};
+    uint32_t scores[sizeof(candidates)] = {0};
+
+    for (uint16_t i = 0; i < record_count; i++) {
+        if (records[i].primary < AP_MIN_CHANNEL ||
+            records[i].primary > AP_MAX_CHANNEL) {
+            continue;
+        }
+        uint32_t signal = rssi_weight(records[i].rssi);
+        for (size_t c = 0; c < sizeof(candidates); c++) {
+            scores[c] += signal * overlap_weight(candidates[c],
+                                                  records[i].primary);
+        }
+    }
+
+    size_t best = 0;
+    for (size_t c = 1; c < sizeof(candidates); c++) {
+        if (scores[c] < scores[best] ||
+            (scores[c] == scores[best] && candidates[c] == g_ap_channel)) {
+            best = c;
+        }
+    }
+
+    if (use_hysteresis) {
+        for (size_t c = 0; c < sizeof(candidates); c++) {
+            if (candidates[c] != g_ap_channel) continue;
+            /* Require a score at least 25 percent better before disrupting AP. */
+            if (scores[c] == 0 || scores[best] * 4U > scores[c] * 3U) {
+                best = c;
+            }
+            break;
+        }
+    }
+
+    ESP_LOGI(TAG, "Channel scores: 1=%lu 6=%lu 11=%lu; selected %u",
+             (unsigned long)scores[0], (unsigned long)scores[1],
+             (unsigned long)scores[2], candidates[best]);
+    return candidates[best];
+}
+
+/* Caller serializes this with ap_config_mutex. Wi-Fi must already be started. */
+static esp_err_t scan_and_select_channel(bool use_hysteresis)
+{
+    uint8_t original_channel = g_ap_channel;
+    if (!sta_netif) {
+        g_last_scan_result = ESP_ERR_INVALID_STATE;
+        g_last_scan_time_us = esp_timer_get_time();
+        return g_last_scan_result;
+    }
+    wifi_mode_t original_mode;
+    esp_err_t err = esp_wifi_get_mode(&original_mode);
+    if (err != ESP_OK) return err;
+
+    g_scan_in_progress = true;
+    wifi_mode_t scan_mode = original_mode == WIFI_MODE_AP
+                                ? WIFI_MODE_APSTA : original_mode;
+    if (scan_mode != original_mode) {
+        err = esp_wifi_set_mode(scan_mode);
+        if (err != ESP_OK) goto done;
+    }
+
+    /* Defaults are deliberately used here: they are validated by the driver
+     * for both STA startup scans and APSTA background scans. */
+    err = esp_wifi_scan_start(NULL, true);
+    if (err != ESP_OK) goto restore_mode;
+
+    uint16_t ap_count = 0;
+    err = esp_wifi_scan_get_ap_num(&ap_count);
+    if (err != ESP_OK) goto clear_scan;
+
+    wifi_ap_record_t *records = NULL;
+    if (ap_count > 0) {
+        records = calloc(ap_count, sizeof(*records));
+        if (!records) {
+            err = ESP_ERR_NO_MEM;
+            goto clear_scan;
+        }
+        uint16_t fetched = ap_count;
+        err = esp_wifi_scan_get_ap_records(&fetched, records);
+        if (err == ESP_OK) {
+            g_ap_channel = choose_best_channel(records, fetched,
+                                                use_hysteresis);
+        }
+        free(records);
+    } else {
+        /* With no visible APs, keep an already non-overlapping channel. */
+        g_ap_channel = choose_best_channel(NULL, 0, use_hysteresis);
+    }
+    goto restore_mode;
+
+clear_scan:
+    esp_wifi_clear_ap_list();
+restore_mode:
+    if (scan_mode != original_mode) {
+        esp_err_t restore_err = esp_wifi_set_mode(original_mode);
+        if (err == ESP_OK) err = restore_err;
+    }
+done:
+    if (err != ESP_OK) {
+        g_ap_channel = original_channel;
+    }
+    g_last_scan_result = err;
+    g_last_scan_time_us = esp_timer_get_time();
+    g_scan_in_progress = false;
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Automatic channel scan failed: %s",
+                 esp_err_to_name(err));
+    }
     return err;
 }
 
@@ -216,6 +381,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                 (wifi_event_ap_staconnected_t *)event_data;
             ESP_LOGI(TAG, "STA joined: " MACSTR " AID=%d",
                      MAC2STR(e->mac), e->aid);
+            portENTER_CRITICAL(&ap_state_lock);
+            g_last_client_activity_us = esp_timer_get_time();
+            portEXIT_CRITICAL(&ap_state_lock);
             break;
         }
 
@@ -224,6 +392,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                 (wifi_event_ap_stadisconnected_t *)event_data;
             ESP_LOGI(TAG, "STA left: " MACSTR " AID=%d",
                      MAC2STR(e->mac), e->aid);
+            portENTER_CRITICAL(&ap_state_lock);
+            g_last_client_activity_us = esp_timer_get_time();
+            portEXIT_CRITICAL(&ap_state_lock);
             break;
         }
 
@@ -308,7 +479,6 @@ static void wifi_init_softap(void)
 
     ESP_ERROR_CHECK(esp_event_handler_register(
         WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
-
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
 
     /* Static IP for AP */
@@ -331,6 +501,17 @@ static void wifi_init_softap(void)
     ESP_ERROR_CHECK(apply_softap_runtime_settings());
 
     ESP_LOGI(TAG, "SoftAP up. SSID=%s CH=%u IP=%s", g_ap_ssid, g_ap_channel, AP_IP_ADDR);
+
+    /* Scanning needs a station netif, but failure to allocate this optional
+     * interface must never take down the already-running SoftAP. */
+    sta_netif = esp_netif_create_default_wifi_sta();
+    if (!sta_netif) {
+        ESP_LOGW(TAG, "STA netif unavailable; automatic scans disabled");
+    }
+
+    portENTER_CRITICAL(&ap_state_lock);
+    g_last_client_activity_us = esp_timer_get_time();
+    portEXIT_CRITICAL(&ap_state_lock);
 }
 
 /* =========================================================================
@@ -339,14 +520,28 @@ static void wifi_init_softap(void)
 
 void ap_get_config_snapshot(char *ssid, size_t ssid_len,
                             char *pass, size_t pass_len,
-                            uint8_t *channel)
+                            ap_channel_status_t *channel_status)
 {
     if (ap_config_mutex) {
         xSemaphoreTake(ap_config_mutex, portMAX_DELAY);
     }
     if (ssid && ssid_len > 0) strlcpy(ssid, g_ap_ssid, ssid_len);
     if (pass && pass_len > 0) strlcpy(pass, g_ap_pass, pass_len);
-    if (channel) *channel = g_ap_channel;
+    if (channel_status) {
+        uint8_t actual_channel = g_ap_channel;
+        wifi_second_chan_t second_channel;
+        if (esp_wifi_get_channel(&actual_channel, &second_channel) != ESP_OK) {
+            actual_channel = g_ap_channel;
+        }
+        *channel_status = (ap_channel_status_t) {
+            .channel_auto = g_channel_auto,
+            .active_channel = actual_channel,
+            .manual_channel = g_manual_channel,
+            .scan_in_progress = g_scan_in_progress,
+            .last_scan_result = g_last_scan_result,
+            .last_scan_time_us = g_last_scan_time_us,
+        };
+    }
     if (ap_config_mutex) {
         xSemaphoreGive(ap_config_mutex);
     }
@@ -384,13 +579,13 @@ char ap_get_health_code(void)
     }
 
     char expected_ssid[sizeof(g_ap_ssid)];
-    uint8_t expected_channel;
+    ap_channel_status_t channel_status;
     ap_get_config_snapshot(expected_ssid, sizeof(expected_ssid),
-                           NULL, 0, &expected_channel);
+                           NULL, 0, &channel_status);
 
     wifi_config_t config;
     if (esp_wifi_get_config(WIFI_IF_AP, &config) != ESP_OK ||
-        config.ap.channel != expected_channel ||
+        config.ap.channel != channel_status.active_channel ||
         config.ap.ssid_len != strlen(expected_ssid) ||
         memcmp(config.ap.ssid, expected_ssid, config.ap.ssid_len) != 0) {
         return 'C';
@@ -404,10 +599,12 @@ char ap_get_health_code(void)
     return 'R';
 }
 
-esp_err_t ap_set_credentials_and_restart(const char *ssid, const char *pass, uint8_t channel)
+esp_err_t ap_set_credentials_and_restart(const char *ssid, const char *pass,
+                                         bool channel_auto,
+                                         uint8_t manual_channel)
 {
     if (!ssid || !pass || ssid[0] == 0 || strlen(ssid) > 32 ||
-        channel < AP_MIN_CHANNEL || channel > AP_MAX_CHANNEL) {
+        manual_channel < AP_MIN_CHANNEL || manual_channel > AP_MAX_CHANNEL) {
         return ESP_ERR_INVALID_ARG;
     }
     size_t pass_len = strlen(pass);
@@ -427,18 +624,28 @@ esp_err_t ap_set_credentials_and_restart(const char *ssid, const char *pass, uin
     char old_ssid[sizeof(g_ap_ssid)];
     char old_pass[sizeof(g_ap_pass)];
     uint8_t old_channel = g_ap_channel;
+    uint8_t old_manual_channel = g_manual_channel;
+    bool old_channel_auto = g_channel_auto;
     strlcpy(old_ssid, g_ap_ssid, sizeof(old_ssid));
     strlcpy(old_pass, g_ap_pass, sizeof(old_pass));
 
     strlcpy(g_ap_ssid, ssid, sizeof(g_ap_ssid));
     strlcpy(g_ap_pass, pass, sizeof(g_ap_pass));
-    g_ap_channel = channel;
+    g_channel_auto = channel_auto;
+    g_manual_channel = manual_channel;
+    if (g_channel_auto) {
+        scan_and_select_channel(false);
+    } else {
+        g_ap_channel = g_manual_channel;
+    }
 
     bool save_attempted = false;
     esp_err_t err = apply_ap_config_and_restart();
     if (err == ESP_OK) {
         save_attempted = true;
-        err = save_ap_config_to_nvs(g_ap_ssid, g_ap_pass, g_ap_channel);
+        err = save_ap_config_to_nvs(g_ap_ssid, g_ap_pass,
+                                    g_channel_auto, g_manual_channel,
+                                    g_ap_channel);
     }
     if (err == ESP_OK) {
         xSemaphoreGive(ap_config_mutex);
@@ -450,6 +657,8 @@ esp_err_t ap_set_credentials_and_restart(const char *ssid, const char *pass, uin
     strlcpy(g_ap_ssid, old_ssid, sizeof(g_ap_ssid));
     strlcpy(g_ap_pass, old_pass, sizeof(g_ap_pass));
     g_ap_channel = old_channel;
+    g_manual_channel = old_manual_channel;
+    g_channel_auto = old_channel_auto;
     esp_err_t rollback_err = apply_ap_config_and_restart();
     if (rollback_err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to restore previous AP settings: %s",
@@ -457,7 +666,8 @@ esp_err_t ap_set_credentials_and_restart(const char *ssid, const char *pass, uin
     }
     if (save_attempted) {
         esp_err_t restore_nvs_err = save_ap_config_to_nvs(
-            old_ssid, old_pass, old_channel);
+            old_ssid, old_pass, old_channel_auto, old_manual_channel,
+            old_channel);
         if (restore_nvs_err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to restore previous AP settings in NVS: %s",
                      esp_err_to_name(restore_nvs_err));
@@ -473,6 +683,70 @@ esp_err_t ap_restart(void)
     esp_err_t err = apply_ap_config_and_restart();
     xSemaphoreGive(ap_config_mutex);
     return err;
+}
+
+static void channel_rescan_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(AUTO_SCAN_POLL_MS));
+
+        wifi_sta_list_t stations = {0};
+        int64_t now = esp_timer_get_time();
+        if (esp_wifi_ap_get_sta_list(&stations) != ESP_OK) continue;
+        if (stations.num > 0) {
+            portENTER_CRITICAL(&ap_state_lock);
+            g_last_client_activity_us = now;
+            portEXIT_CRITICAL(&ap_state_lock);
+            continue;
+        }
+
+        int64_t last_client_activity;
+        portENTER_CRITICAL(&ap_state_lock);
+        last_client_activity = g_last_client_activity_us;
+        portEXIT_CRITICAL(&ap_state_lock);
+
+        xSemaphoreTake(ap_config_mutex, portMAX_DELAY);
+        bool initial_scan_due = g_last_scan_time_us == 0 &&
+            now - last_client_activity >= AUTO_INITIAL_SCAN_IDLE_US;
+        bool periodic_scan_due = g_last_scan_time_us > 0 &&
+            now - g_last_scan_time_us >= AUTO_SCAN_INTERVAL_US &&
+            now - last_client_activity >= AUTO_SCAN_IDLE_US;
+        bool due = g_channel_auto && !g_scan_in_progress &&
+                   (initial_scan_due || periodic_scan_due);
+        if (!due || web_server_is_ota_in_progress()) {
+            xSemaphoreGive(ap_config_mutex);
+            continue;
+        }
+
+        /* Close the race with a client joining while the mutex was acquired. */
+        memset(&stations, 0, sizeof(stations));
+        if (esp_wifi_ap_get_sta_list(&stations) != ESP_OK || stations.num > 0) {
+            xSemaphoreGive(ap_config_mutex);
+            continue;
+        }
+
+        uint8_t old_channel = g_ap_channel;
+        esp_err_t err = scan_and_select_channel(g_last_scan_time_us != 0);
+        if (err == ESP_OK && g_ap_channel != old_channel) {
+            ESP_LOGW(TAG, "Idle automatic channel change %u -> %u",
+                     old_channel, g_ap_channel);
+            err = apply_ap_config_and_restart();
+            if (err != ESP_OK) {
+                g_ap_channel = old_channel;
+                apply_ap_config_and_restart();
+            } else {
+                esp_err_t save_err = save_ap_config_to_nvs(
+                    g_ap_ssid, g_ap_pass, g_channel_auto,
+                    g_manual_channel, g_ap_channel);
+                if (save_err != ESP_OK) {
+                    ESP_LOGW(TAG, "Failed to save selected channel: %s",
+                             esp_err_to_name(save_err));
+                }
+            }
+        }
+        xSemaphoreGive(ap_config_mutex);
+    }
 }
 
 /* =========================================================================
@@ -498,6 +772,10 @@ void app_main(void)
 
     load_ap_config_from_nvs();
     wifi_init_softap();
+
+    BaseType_t channel_task_ok = xTaskCreate(
+        channel_rescan_task, "channel_rescan", 4096, NULL, 3, NULL);
+    ESP_ERROR_CHECK(channel_task_ok == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
 
     /* Start modules */
     ESP_ERROR_CHECK(client_rssi_init()); // Initialize client RSSI tracking first
