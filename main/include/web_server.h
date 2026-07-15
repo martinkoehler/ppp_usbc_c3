@@ -9,6 +9,8 @@
  */
 #pragma once
 
+#include <stdint.h>
+
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -30,6 +32,8 @@ void web_server_stop(void);
 void web_server_restart(void);
 bool web_server_health_check(void);
 bool web_server_health_check_ex(int *status_out, esp_err_t *err_out);
+void web_server_get_cached_health(int *status_out, esp_err_t *err_out,
+                                  int64_t *checked_at_us_out);
 bool web_server_is_running(void);
 bool web_server_is_ota_in_progress(void);
 int web_server_get_ota_progress(void);

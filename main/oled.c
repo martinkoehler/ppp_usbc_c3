@@ -23,7 +23,6 @@
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_system.h"
-#include "esp_timer.h"
 #include "esp_wifi.h"
 
 #include "u8g2.h"
@@ -222,20 +221,10 @@ static void process_requested_debug_toggle(void)
     }
 }
 
-static void update_web_health(void)
+static void update_cached_web_health(void)
 {
-    if (web_server_is_ota_in_progress()) {
-        last_web_status = 0;
-        last_web_err = ESP_ERR_INVALID_STATE;
-        last_web_check_us = esp_timer_get_time();
-        return;
-    }
-    int64_t now = esp_timer_get_time();
-    if (last_web_check_us != 0 && (now - last_web_check_us) < 5000000) {
-        return;
-    }
-    web_server_health_check_ex(&last_web_status, &last_web_err);
-    last_web_check_us = now;
+    web_server_get_cached_health(&last_web_status, &last_web_err,
+                                 &last_web_check_us);
 }
 
 static void draw_debug_page(void)
@@ -390,7 +379,7 @@ static void oled_task(void *arg)
     while (1) {
         poll_debug_button();
         process_requested_debug_toggle();
-        update_web_health();
+        update_cached_web_health();
         if ((tick % 10) == 0) {
             handle_oled();
         }

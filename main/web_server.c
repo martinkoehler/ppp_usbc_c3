@@ -19,6 +19,7 @@
 #include <stdbool.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_http_server.h"
 #include "esp_http_client.h"
 #include "esp_tls_crypto.h"
@@ -43,6 +44,10 @@ static const char *TAG = "web_server";
 static httpd_handle_t s_httpd = NULL;
 static bool s_ota_in_progress = false;
 static int s_ota_progress = -1;
+static int s_health_status = 0;
+static esp_err_t s_health_err = ESP_ERR_INVALID_STATE;
+static int64_t s_health_checked_at_us = 0;
+static portMUX_TYPE s_health_lock = portMUX_INITIALIZER_UNLOCKED;
 
 #define ADMIN_USERNAME "admin"
 
@@ -404,16 +409,29 @@ static esp_err_t status_all_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static bool store_health_result(int status, esp_err_t err,
+                                int *status_out, esp_err_t *err_out)
+{
+    portENTER_CRITICAL(&s_health_lock);
+    s_health_status = status;
+    s_health_err = err;
+    s_health_checked_at_us = esp_timer_get_time();
+    portEXIT_CRITICAL(&s_health_lock);
+
+    if (status_out) {
+        *status_out = status;
+    }
+    if (err_out) {
+        *err_out = err;
+    }
+    return err == ESP_OK && status == 200;
+}
+
 bool web_server_health_check_ex(int *status_out, esp_err_t *err_out)
 {
     if (!s_httpd) {
-        if (status_out) {
-            *status_out = 0;
-        }
-        if (err_out) {
-            *err_out = ESP_ERR_INVALID_STATE;
-        }
-        return false;
+        return store_health_result(0, ESP_ERR_INVALID_STATE,
+                                   status_out, err_out);
     }
 
     struct ifreq ifr = {0};
@@ -437,31 +455,35 @@ bool web_server_health_check_ex(int *status_out, esp_err_t *err_out)
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
-        if (status_out) {
-            *status_out = 0;
-        }
-        if (err_out) {
-            *err_out = ESP_ERR_NO_MEM;
-        }
-        return false;
+        return store_health_result(0, ESP_ERR_NO_MEM, status_out, err_out);
     }
 
     esp_err_t err = esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
 
-    if (status_out) {
-        *status_out = status;
-    }
-    if (err_out) {
-        *err_out = err;
-    }
-    return (err == ESP_OK && status == 200);
+    return store_health_result(status, err, status_out, err_out);
 }
 
 bool web_server_health_check(void)
 {
     return web_server_health_check_ex(NULL, NULL);
+}
+
+void web_server_get_cached_health(int *status_out, esp_err_t *err_out,
+                                  int64_t *checked_at_us_out)
+{
+    portENTER_CRITICAL(&s_health_lock);
+    if (status_out) {
+        *status_out = s_health_status;
+    }
+    if (err_out) {
+        *err_out = s_health_err;
+    }
+    if (checked_at_us_out) {
+        *checked_at_us_out = s_health_checked_at_us;
+    }
+    portEXIT_CRITICAL(&s_health_lock);
 }
 
 bool web_server_is_running(void)
