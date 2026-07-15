@@ -9,6 +9,7 @@
  */
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -40,6 +41,18 @@ uint8_t ap_get_channel(void);
 
 /** AP netif handle (for DHCP client lookup). */
 esp_netif_t *ap_get_netif(void);
+
+/** Return true while the Wi-Fi SoftAP driver is running. */
+bool ap_is_running(void);
+
+/**
+ * Return a compact SoftAP self-check code for the OLED debug page.
+ *
+ * R = ready, E = no AP_START event, M = wrong/unavailable Wi-Fi mode,
+ * N = AP netif down, I = AP IP unavailable, C = AP config mismatch,
+ * L = SoftAP control block unavailable.
+ */
+char ap_get_health_code(void);
 
 /**
  * @brief Save new AP credentials to NVS and restart AP.

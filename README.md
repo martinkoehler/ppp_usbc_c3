@@ -121,7 +121,17 @@ Press the BOOT button (GPIO9) to toggle the debug screen. The debug screen shows
 - Web server status (R=Running, S=Stopped)
 - HTTP health status (last HTTP response code)
 - OTA progress (if upload in progress)
-- MQTT and AP state
+- MQTT and AP state. `AP:R` means all local SoftAP checks pass. Other AP codes
+  identify the failed check: `E` = no AP start event, `M` = WiFi mode, `N` =
+  network interface down, `I` = IP unavailable, `C` = configuration mismatch,
+  and `L` = SoftAP control block unavailable.
+
+> **ESP32-C3 reset note:** GPIO9 is also the boot-mode strap. Do not hold the
+> BOOT button while pressing or releasing RESET, because that starts the ROM
+> download mode instead of this application. The OLED may retain its previous
+> image in that mode, so an old `AP:R` can remain visible even though the
+> firmware and access point are not running. Reset without BOOT held, wait for
+> the application to start, and then tap BOOT to open the debug screen.
 
 ## WiFi Signal Strength Tracking
 

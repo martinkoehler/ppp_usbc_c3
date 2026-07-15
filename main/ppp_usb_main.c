@@ -66,6 +66,7 @@ static char g_ap_ssid[33] = DEFAULT_AP_SSID;
 static char g_ap_pass[65] = DEFAULT_AP_PASS;
 static uint8_t g_ap_channel = DEFAULT_AP_CHANNEL;
 static esp_netif_t *ap_netif = NULL;
+static volatile bool ap_started = false;
 
 static esp_err_t save_ap_config_to_nvs(const char *ssid, const char *pass, uint8_t channel);
 
@@ -187,40 +188,104 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 {
     (void)arg;
 
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STACONNECTED) {
-        wifi_event_ap_staconnected_t *e = (wifi_event_ap_staconnected_t *)event_data;
-        ESP_LOGI(TAG, "STA joined: " MACSTR " AID=%d", MAC2STR(e->mac), e->aid);
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STADISCONNECTED) {
-        wifi_event_ap_stadisconnected_t *e = (wifi_event_ap_stadisconnected_t *)event_data;
-        ESP_LOGI(TAG, "STA left: " MACSTR " AID=%d", MAC2STR(e->mac), e->aid);
+    if (event_base != WIFI_EVENT) {
+        return;
+    }
+
+    switch (event_id) {
+        case WIFI_EVENT_AP_START:
+            ap_started = true;
+            ESP_LOGI(TAG, "WiFi SoftAP driver started");
+            break;
+
+        case WIFI_EVENT_AP_STOP:
+            ap_started = false;
+            ESP_LOGW(TAG, "WiFi SoftAP driver stopped");
+            break;
+
+        case WIFI_EVENT_AP_STACONNECTED: {
+            wifi_event_ap_staconnected_t *e =
+                (wifi_event_ap_staconnected_t *)event_data;
+            ESP_LOGI(TAG, "STA joined: " MACSTR " AID=%d",
+                     MAC2STR(e->mac), e->aid);
+            break;
+        }
+
+        case WIFI_EVENT_AP_STADISCONNECTED: {
+            wifi_event_ap_stadisconnected_t *e =
+                (wifi_event_ap_stadisconnected_t *)event_data;
+            ESP_LOGI(TAG, "STA left: " MACSTR " AID=%d",
+                     MAC2STR(e->mac), e->aid);
+            break;
+        }
+
+        default:
+            break;
     }
 }
 
-static void apply_ap_config_and_restart(void)
+static void fill_softap_config(wifi_config_t *wifi_config)
 {
-    wifi_config_t wifi_config = {0};
-    wifi_config.ap.channel = g_ap_channel;
-    wifi_config.ap.max_connection = AP_MAX_CONN;
-    wifi_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
-    wifi_config.ap.pmf_cfg.required = false;
-    wifi_config.ap.beacon_interval = 50;
-    wifi_config.ap.dtim_period = 1;
+    memset(wifi_config, 0, sizeof(*wifi_config));
 
-    strncpy((char *)wifi_config.ap.ssid, g_ap_ssid, sizeof(wifi_config.ap.ssid));
-    wifi_config.ap.ssid_len = strlen(g_ap_ssid);
+    wifi_config->ap.channel = g_ap_channel;
+    wifi_config->ap.max_connection = AP_MAX_CONN;
+    wifi_config->ap.authmode = strlen(g_ap_pass) == 0
+                                   ? WIFI_AUTH_OPEN
+                                   : WIFI_AUTH_WPA2_PSK;
+    wifi_config->ap.pmf_cfg.required = false;
+    wifi_config->ap.beacon_interval = 100;
+    wifi_config->ap.dtim_period = 1;
 
-    strncpy((char *)wifi_config.ap.password, g_ap_pass, sizeof(wifi_config.ap.password));
+    wifi_config->ap.ssid_len = strlen(g_ap_ssid);
+    memcpy(wifi_config->ap.ssid, g_ap_ssid, wifi_config->ap.ssid_len);
 
-    if (strlen(g_ap_pass) == 0) {
-        wifi_config.ap.authmode = WIFI_AUTH_OPEN;
+    memcpy(wifi_config->ap.password, g_ap_pass, strlen(g_ap_pass));
+}
+
+static esp_err_t apply_ap_config_and_restart(void)
+{
+    wifi_config_t wifi_config;
+    fill_softap_config(&wifi_config);
+
+    ESP_LOGW(TAG, "Restarting SoftAP. SSID='%s' CH=%u",
+             g_ap_ssid, g_ap_channel);
+
+    esp_err_t err = esp_wifi_stop();
+    if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_STARTED) {
+        ESP_LOGE(TAG, "esp_wifi_stop failed: %s", esp_err_to_name(err));
+        return err;
     }
 
-    ESP_ERROR_CHECK(esp_wifi_stop());
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_ERROR_CHECK(apply_softap_runtime_settings());
+    vTaskDelay(pdMS_TO_TICKS(250));
 
-    ESP_LOGI(TAG, "SoftAP restarted. SSID='%s' CH=%u", g_ap_ssid, g_ap_channel);
+    err = esp_wifi_set_mode(WIFI_MODE_AP);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_set_mode failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = esp_wifi_set_config(WIFI_IF_AP, &wifi_config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_set_config failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = esp_wifi_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = apply_softap_runtime_settings();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "SoftAP runtime settings failed: %s",
+                 esp_err_to_name(err));
+        return err;
+    }
+
+    ESP_LOGI(TAG, "SoftAP restart completed");
+    return ESP_OK;
 }
 
 static void wifi_init_softap(void)
@@ -250,19 +315,8 @@ static void wifi_init_softap(void)
     ESP_ERROR_CHECK(esp_netif_set_ip_info(ap_netif, &ip_info));
     ESP_ERROR_CHECK(esp_netif_dhcps_start(ap_netif));
 
-    wifi_config_t wifi_config = {0};
-    wifi_config.ap.channel = g_ap_channel;
-    wifi_config.ap.max_connection = AP_MAX_CONN;
-    wifi_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
-    wifi_config.ap.pmf_cfg.required = false;
-    wifi_config.ap.beacon_interval = 100;
-    wifi_config.ap.dtim_period = 1;
-
-    strncpy((char *)wifi_config.ap.ssid, g_ap_ssid, sizeof(wifi_config.ap.ssid));
-    wifi_config.ap.ssid_len = strlen(g_ap_ssid);
-    strncpy((char *)wifi_config.ap.password, g_ap_pass, sizeof(wifi_config.ap.password));
-
-    if (strlen(g_ap_pass) == 0) wifi_config.ap.authmode = WIFI_AUTH_OPEN;
+    wifi_config_t wifi_config;
+    fill_softap_config(&wifi_config);
 
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -279,6 +333,45 @@ const char *ap_get_ssid(void) { return g_ap_ssid; }
 const char *ap_get_pass(void) { return g_ap_pass; }
 uint8_t ap_get_channel(void) { return g_ap_channel; }
 esp_netif_t *ap_get_netif(void) { return ap_netif; }
+bool ap_is_running(void) { return ap_started; }
+
+char ap_get_health_code(void)
+{
+    if (!ap_started) {
+        return 'E';
+    }
+
+    wifi_mode_t mode;
+    if (esp_wifi_get_mode(&mode) != ESP_OK ||
+        (mode != WIFI_MODE_AP && mode != WIFI_MODE_APSTA)) {
+        return 'M';
+    }
+
+    if (ap_netif == NULL || !esp_netif_is_netif_up(ap_netif)) {
+        return 'N';
+    }
+
+    esp_netif_ip_info_t ip_info;
+    if (esp_netif_get_ip_info(ap_netif, &ip_info) != ESP_OK ||
+        ip_info.ip.addr == 0) {
+        return 'I';
+    }
+
+    wifi_config_t config;
+    if (esp_wifi_get_config(WIFI_IF_AP, &config) != ESP_OK ||
+        config.ap.channel != g_ap_channel ||
+        config.ap.ssid_len != strlen(g_ap_ssid) ||
+        memcmp(config.ap.ssid, g_ap_ssid, config.ap.ssid_len) != 0) {
+        return 'C';
+    }
+
+    wifi_sta_list_t sta_list = {0};
+    if (esp_wifi_ap_get_sta_list(&sta_list) != ESP_OK) {
+        return 'L';
+    }
+
+    return 'R';
+}
 
 esp_err_t ap_set_credentials_and_restart(const char *ssid, const char *pass, uint8_t channel)
 {
@@ -288,14 +381,12 @@ esp_err_t ap_set_credentials_and_restart(const char *ssid, const char *pass, uin
     strlcpy(g_ap_ssid, ssid, sizeof(g_ap_ssid));
     strlcpy(g_ap_pass, pass, sizeof(g_ap_pass));
     g_ap_channel = sanitize_ap_channel(channel);
-    apply_ap_config_and_restart();
-    return ESP_OK;
+    return apply_ap_config_and_restart();
 }
 
 esp_err_t ap_restart(void)
 {
-    apply_ap_config_and_restart();
-    return ESP_OK;
+    return apply_ap_config_and_restart();
 }
 
 /* =========================================================================
@@ -317,7 +408,7 @@ void app_main(void)
     mqtt_broker_start();
     oled_start();
     ppp_usb_start();
-    watchdog_start(10, 15000); // Reset after 10s, checks every 15s
+    watchdog_start(30, 5000); // 30s timeout; watchdog task feeds every 5s
 
     /* app_main no longer needs a forever loop:
      * watchdog loop runs in its own task.

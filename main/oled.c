@@ -9,6 +9,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "oled.h"
+#include "ap_config.h"
 #include "mqtt_broker.h"
 #include "web_server.h"
 #include "client_rssi.h"
@@ -253,7 +254,8 @@ static void draw_debug_page(void)
     } else {
         snprintf(line2, sizeof(line2), "E:%04X", (unsigned)last_web_err & 0xFFFF);
     }
-    snprintf(line3, sizeof(line3), "AP:%d M:%c",
+    snprintf(line3, sizeof(line3), "AP:%c C:%d M:%c",
+             ap_get_health_code(),
              get_connected_client_count(),
              mqtt_broker_is_running() ? 'R' : 'S');
 
