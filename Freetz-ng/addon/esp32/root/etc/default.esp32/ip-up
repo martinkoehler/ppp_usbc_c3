@@ -16,9 +16,14 @@ echo "PPP up on $IF, adding routes..."
 # Start mqtt_to_sqlite after routes are in place
 export MQTT_BROKER=192.168.178.250
 export MQTT_PORT=1883
-export MQTT_TOPIC="+/power/get,+/energycounter/get"
-#export MQTT_DB_PATH=
-#export MQTT_CLIENT_ID
+export MQTT_TOPICS="+/power/get,+/energycounter/get"
+export MQTT_DB_PATH=/var/media/ftp/Verbatim-STORENGO-01/mqtt_messages.db
+export MQTT_CLIENT_ID=fritzbox-mqtt2sqlite
+export NETWORK_FIX_SCRIPT=/bin/true
+export RECONNECT_MIN_S=2
+export RECONNECT_MAX_S=60
+export RETRY_SLEEP_AFTER_SCRIPT_S=5
+export MQTT_LOG_INSERTS=0
 /usr/bin/mqtt_to_sqlite  &
 echo $! > /var/run/mqtt_to_sqlite.pid
 

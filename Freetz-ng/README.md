@@ -25,21 +25,44 @@ work/
 ```
 
 From the parent directory, copy the **contents** of `Freetz-ng`, not the
-directory itself:
+directory itself. `rsync` is convenient for repeat installations because it
+reports changed files and handles metadata consistently:
+
+```sh
+rsync -av ppp_usbc_c3/Freetz-ng/ freetz-ng/
+```
+
+If `rsync` is unavailable, use:
 
 ```sh
 cp -a ppp_usbc_c3/Freetz-ng/. freetz-ng/
 ```
 
-Equivalently, from inside the Freetz-ng source directory:
-
-```sh
-cp -a ../ppp_usbc_c3/Freetz-ng/. .
-```
-
-The trailing `/.` is significant: after copying, paths such as
+The trailing slash on the rsync source, or `/.` with `cp`, is significant:
+after copying, paths such as
 `freetz-ng/addon/static.pkg` and `freetz-ng/make/pkgs/mqtt2sqlite` must exist.
 Do not end up with `freetz-ng/Freetz-ng/...`.
+
+Do **not** add `--delete` to this rsync command. The overlay is only a sparse
+set of additions to a much larger Freetz-ng tree; a root-level `--delete`
+would treat normal Freetz-ng files as absent from the overlay and remove them.
+Neither `cp` nor safe overlay-style rsync can infer that a file removed in a
+new overlay version should also be removed from an existing destination.
+Review the overlay repository's changes when updating and remove explicitly
+retired destination files by their exact paths.
+
+When upgrading from an older version of this overlay, remove its two retired
+legacy boot scripts from the destination. Inspect a top-level `rc.custom`
+first if it may contain unrelated local configuration:
+
+```sh
+rm freetz-ng/addon/esp32/root/etc/init.d/rc.custom
+rm freetz-ng/rc.custom
+```
+
+The PPP init script now handles module loading, reconnects, routing, and the
+collector lifecycle. Do not install the former large `rc.custom` on the
+router, because it would start competing pppd and collector processes.
 
 `addon/static.pkg` is part of the overlay and lists the `esp32` addon. If the
 destination tree already has a customized `addon/static.pkg`,
@@ -57,18 +80,18 @@ with the same names. Preserve any local configuration changes first.
 
 ### Configure the overlay files
 
-The `ip-up` hook currently passes two comma-separated filters through the
-legacy singular `MQTT_TOPIC` variable. Change it to the plural variable so the
-collector creates two subscriptions:
+Review the serial device and speed, PPP addresses, ESP32 subnet route, and
+MQTT settings in the supplied files. By default, `ip-up` connects the
+collector to the ESP32 broker at `192.168.178.250:1883`, subscribes to the two
+power topics, and writes to:
 
-```sh
-export MQTT_TOPICS="+/power/get,+/energycounter/get"
+```text
+/var/media/ftp/Verbatim-STORENGO-01/mqtt_messages.db
 ```
 
-Also review the serial device and speed, PPP addresses, ESP32 subnet route,
-MQTT broker/topics, and database path in the supplied files. The database path
-configured for `mqtt-grafana` must match `MQTT_DB_PATH` used by
-`mqtt_to_sqlite`.
+This is also the default database path compiled into `mqtt-grafana`. Change
+both settings if the USB volume has a different mount name. The storage must
+be mounted and writable before the PPP link comes up.
 
 ## Configure the firmware
 
@@ -292,7 +315,7 @@ configuration. Topic precedence is repeated `-t`/`--topic`, then
 ```sh
 MQTT_BROKER=192.168.178.250 \
 MQTT_TOPICS='+/power/get,+/energycounter/get' \
-MQTT_DB_PATH=/var/media/ftp/storage/mqtt_messages.db \
+MQTT_DB_PATH=/var/media/ftp/Verbatim-STORENGO-01/mqtt_messages.db \
 /usr/bin/mqtt_to_sqlite
 ```
 
@@ -331,8 +354,6 @@ Do not expose it directly to the Internet.
   under “Current PPP filename check”, then rebuild the image.
 - **PPP starts but the ESP32 subnet is unreachable:** compare the negotiated
   addresses with `esp32c3.config` and check the route installed by `ip-up`.
-- **Only one malformed subscription appears:** use `MQTT_TOPICS`, not
-  comma-separated values in `MQTT_TOPIC`.
 - **No database:** use an absolute writable `MQTT_DB_PATH`, ensure its parent
   storage is mounted before PPP comes up, and inspect collector output.
 - **CGI returns 403:** the configured allowed IP does not equal the request's
