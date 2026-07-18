@@ -127,11 +127,20 @@ you jump to it. Enabling the packages selects their declared dependencies:
 - `mqtt2sqlite`: Mosquitto client library and SQLite
 - `mqtt-grafana`: SQLite
 
-Also search for and enable the target's `pppd` package so that
-`/usr/sbin/pppd` is present in the firmware. Selecting `pppd` selects the
-Freetz PPP package and required PPP kernel-module symbols, including
-`ppp_generic` and `ppp_async`, when the target does not already provide them.
-The optional PPP CGI and `chat` utility are not required by these scripts.
+Enable PPP in this order because the `pppd` entry is hidden until the base PPP
+package is selected:
+
+1. Open **Packages → Web interfaces** and enable **Point-to-Point**
+   (`FREETZ_PACKAGE_PPP`).
+2. Return to **Packages** and enable **pppd 2.4.7 - DEPRECATED**
+   (`FREETZ_PACKAGE_PPPD`).
+
+The second selection installs `/usr/sbin/pppd` and selects the required PPP
+kernel-module symbols, including `ppp_generic` and `ppp_async`, when the target
+does not already provide them. The **ppp dial-up-network** web interface,
+`pppd chat`, PPP CGI, and EAP-TLS options are not required by these scripts.
+Press `/` and search for `FREETZ_PACKAGE_PPP` and then
+`FREETZ_PACKAGE_PPPD` if either entry is difficult to locate.
 
 Set **Level of user competence** to **Expert** if the **Kernel modules** menu
 is hidden; Freetz-ng exposes that menu only in Expert or Developer mode.
