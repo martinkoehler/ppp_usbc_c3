@@ -6,6 +6,14 @@ Read-only SQLite-to-JSON CGI endpoint for the Freetz web server on port 81.
 Installed URL:
   http://fritz.box:81/cgi-bin/mqtt-grafana.cgi
 
+Power dashboard:
+  http://fritz.box:81/mqtt-grafana.html
+
+The dashboard displays the current value of obk_wr/power/get and its history
+over the last 48 hours. It refreshes every five seconds. The page and endpoint
+are served from the same authenticated Freetz web server, so the browser reuses
+the port-81 authentication and no credentials are handled by JavaScript.
+
 Parameters:
   from=UNIX_SECONDS       default: now - 3600
   to=UNIX_SECONDS         default: now

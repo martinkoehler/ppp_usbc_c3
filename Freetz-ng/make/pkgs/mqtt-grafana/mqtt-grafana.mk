@@ -1,4 +1,4 @@
-$(call PKG_INIT_BIN, 1.0.4)
+$(call PKG_INIT_BIN, 1.0.5)
 
 $(PKG)_SOURCE:=
 $(PKG)_SITE:=none
@@ -13,6 +13,8 @@ MQTT_GRAFANA_FILESDIR := $($(PKG)_TARGET_DIR)
 MQTT_GRAFANA_BINARY   := $(MQTT_GRAFANA_FILESDIR)/mqtt-grafana.cgi
 MQTT_GRAFANA_ROOTDIR  := $($(PKG)_DEST_DIR)
 MQTT_GRAFANA_TARGET   := $(MQTT_GRAFANA_ROOTDIR)/usr/mww/cgi-bin/mqtt-grafana.cgi
+MQTT_GRAFANA_WEB_SRC  := $(MQTT_GRAFANA_FILESDIR)/mqtt-grafana.html
+MQTT_GRAFANA_WEB      := $(MQTT_GRAFANA_ROOTDIR)/usr/mww/mqtt-grafana.html
 
 $(MQTT_GRAFANA_BINARY): $(PACKAGES_DIR)/.$(pkg)-$($(PKG)_VERSION)
 	@test -f "$(TARGET_TOOLCHAIN_STAGING_DIR)/usr/include/sqlite3.h" || { \
@@ -39,6 +41,10 @@ $(MQTT_GRAFANA_TARGET): $(MQTT_GRAFANA_BINARY)
 		$(PATCHELF_TARGET) --set-interpreter $(FREETZ_LIBRARY_DIR)/ld-uClibc.so.1 $@
 	$(TARGET_STRIP) $@
 
-$(pkg)-precompiled: $(MQTT_GRAFANA_TARGET)
+$(MQTT_GRAFANA_WEB): $(MQTT_GRAFANA_WEB_SRC)
+	@mkdir -p $(dir $@)
+	cp -f $< $@
+
+$(pkg)-precompiled: $(MQTT_GRAFANA_TARGET) $(MQTT_GRAFANA_WEB)
 
 $(PKG_FINISH)

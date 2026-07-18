@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Power Monitor</title>
+<style>
+:root{--bg:#08111f;--panel:#111d2e;--line:#26364b;--text:#f4f7fb;--muted:#8fa1b7;--blue:#38bdf8;--green:#4ade80;--red:#fb7185}
+*{box-sizing:border-box}
+body{min-height:100vh;margin:0;padding:28px 18px;color:var(--text);background:radial-gradient(circle at 15% 0,rgba(56,189,248,.12),transparent 35rem),var(--bg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{width:min(1120px,100%);margin:auto}
+header{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:22px}
+h1{margin:0;font-size:clamp(1.55rem,4vw,2.15rem);letter-spacing:-.04em}
+.subtitle,.updated,.chart-note{color:var(--muted)}
+.subtitle{margin:5px 0 0}
+.status{display:flex;align-items:center;gap:9px;white-space:nowrap;color:var(--muted);font-size:.87rem}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--muted);box-shadow:0 0 0 4px rgba(143,161,183,.1)}
+.online .dot{background:var(--green);box-shadow:0 0 0 4px rgba(74,222,128,.12)}
+.error .dot{background:var(--red);box-shadow:0 0 0 4px rgba(251,113,133,.12)}
+.grid{display:grid;grid-template-columns:minmax(230px,.34fr) minmax(0,1fr);gap:18px}
+.panel{border:1px solid rgba(143,161,183,.16);border-radius:18px;background:rgba(17,29,46,.94);box-shadow:0 18px 50px rgba(0,0,0,.2)}
+.current{min-height:350px;padding:28px;display:flex;flex-direction:column;justify-content:space-between}
+.label{color:var(--muted);font-size:.8rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase}
+.reading{margin:36px 0;font-size:clamp(3.6rem,8vw,5.8rem);font-weight:720;line-height:.9;letter-spacing:-.075em}
+.unit{margin-left:9px;color:var(--blue);font-size:.3em;letter-spacing:0}
+.updated{font-size:.83rem}
+.error-text{min-height:1.3em;margin-top:8px;color:var(--red);font-size:.83rem}
+.history{min-width:0;padding:24px 24px 18px}
+.chart-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:14px}
+h2{margin:0;font-size:1.08rem}
+.chart-note{margin:4px 0 0;font-size:.82rem}
+.count{color:var(--muted);font-size:.78rem;white-space:nowrap}
+.chart-wrap{position:relative;height:330px}
+canvas{display:block;width:100%;height:100%}
+@media(max-width:750px){body{padding:20px 12px}header{align-items:flex-start;flex-direction:column}.grid{grid-template-columns:1fr}.current{min-height:225px}.reading{margin:24px 0}.history{padding:20px 12px 14px}.chart-wrap{height:300px}}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>Power Monitor</h1><p class="subtitle">Live consumption from obk_wr/power/get</p></div>
+    <div id="status" class="status"><span class="dot"></span><span id="statusText">Loading history</span></div>
+  </header>
+  <section class="grid">
+    <article class="panel current">
+      <div><div class="label">Current power</div><div class="reading"><span id="value">--</span><span class="unit">W</span></div></div>
+      <div><div id="updated" class="updated">No reading received yet</div><div id="error" class="error-text"></div></div>
+    </article>
+    <article class="panel history">
+      <div class="chart-head">
+        <div><h2>Power history</h2><p class="chart-note">Last 48 hours</p></div>
+        <span id="count" class="count">0 samples</span>
+      </div>
+      <div class="chart-wrap"><canvas id="chart" aria-label="Power over the last 48 hours"></canvas></div>
+    </article>
+  </section>
+</main>
+<script>
+"use strict";
+const TOPIC="obk_wr/power/get";
+const ENDPOINT="cgi-bin/mqtt-grafana.cgi";
+const WINDOW_MS=48*60*60*1000;
+const REFRESH_MS=5000;
+const LIMIT=20000;
+let samples=[];
+let busy=false;
+
+const el={
+  value:document.getElementById("value"),updated:document.getElementById("updated"),
+  error:document.getElementById("error"),status:document.getElementById("status"),
+  statusText:document.getElementById("statusText"),count:document.getElementById("count"),
+  canvas:document.getElementById("chart")
+};
+
+function setStatus(kind,text){el.status.className="status "+kind;el.statusText.textContent=text}
+function numberText(value){return value.toLocaleString(undefined,{minimumFractionDigits:1,maximumFractionDigits:2})}
+function validRows(data){
+  if(!Array.isArray(data))throw new Error("Endpoint returned invalid JSON");
+  return data.map(row=>({time:Number(row.time),value:Number(row.value)}))
+    .filter(row=>Number.isFinite(row.time)&&Number.isFinite(row.value));
+}
+function mergeRows(rows){
+  const cutoff=Date.now()-WINDOW_MS;
+  const seen=new Set();
+  samples=samples.concat(rows).filter(row=>row.time>=cutoff).sort((a,b)=>a.time-b.time)
+    .filter(row=>{const key=row.time+":"+row.value;if(seen.has(key))return false;seen.add(key);return true});
+}
+function updateDisplay(){
+  const latest=samples[samples.length-1];
+  el.count.textContent=samples.length+" sample"+(samples.length===1?"":"s");
+  if(latest){el.value.textContent=numberText(latest.value);el.updated.textContent="Updated "+new Date(latest.time).toLocaleString()}
+  drawChart();
+}
+async function requestRows(fromMs,toMs){
+  const query=new URLSearchParams({topic:TOPIC,from:String(Math.floor(fromMs/1000)),to:String(Math.ceil(toMs/1000)),limit:String(LIMIT)});
+  const response=await fetch(ENDPOINT+"?"+query,{cache:"no-store",headers:{Accept:"application/json"}});
+  if(!response.ok){let detail="";try{detail=(await response.json()).error||""}catch(_ignored){}throw new Error(detail||("HTTP "+response.status))}
+  return validRows(await response.json());
+}
+async function refresh(initial){
+  if(busy)return;
+  busy=true;
+  try{
+    const now=Date.now();
+    const from=initial||!samples.length?now-WINDOW_MS:Math.max(now-WINDOW_MS,samples[samples.length-1].time-1000);
+    mergeRows(await requestRows(from,now));
+    updateDisplay();
+    el.error.textContent="";
+    setStatus("online","Connected");
+  }catch(error){
+    el.error.textContent=error.message;
+    setStatus("error","Connection error");
+  }finally{busy=false}
+}
+function compact(data,maxPoints){
+  if(data.length<=maxPoints)return data;
+  const result=[];
+  const bucket=Math.ceil(data.length/(maxPoints/2));
+  for(let start=0;start<data.length;start+=bucket){
+    const part=data.slice(start,start+bucket);let lo=part[0],hi=part[0];
+    for(const point of part){if(point.value<lo.value)lo=point;if(point.value>hi.value)hi=point}
+    if(lo.time<=hi.time)result.push(lo,hi);else result.push(hi,lo);
+  }
+  return result;
+}
+function drawChart(){
+  const canvas=el.canvas,rect=canvas.getBoundingClientRect(),dpr=Math.min(devicePixelRatio||1,2);
+  const width=Math.max(1,Math.round(rect.width*dpr)),height=Math.max(1,Math.round(rect.height*dpr));
+  if(canvas.width!==width||canvas.height!==height){canvas.width=width;canvas.height=height}
+  const ctx=canvas.getContext("2d");ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,rect.width,rect.height);
+  const w=rect.width,h=rect.height,pad={l:54,r:14,t:13,b:32},pw=w-pad.l-pad.r,ph=h-pad.t-pad.b;
+  const now=Date.now(),start=now-WINDOW_MS;
+  const visible=samples.filter(point=>point.time>=start&&point.time<=now);
+  let max=visible.length?Math.max(...visible.map(point=>point.value)):10;
+  max=Math.max(1,Math.ceil(max*1.15/5)*5);
+  ctx.font="12px system-ui";ctx.lineWidth=1;ctx.textBaseline="middle";
+  for(let i=0;i<=4;i++){
+    const y=pad.t+ph*i/4,value=max*(1-i/4);
+    ctx.strokeStyle="rgba(143,161,183,.12)";ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(w-pad.r,y);ctx.stroke();
+    ctx.fillStyle="#8fa1b7";ctx.textAlign="right";ctx.fillText(value.toFixed(value<10?1:0)+" W",pad.l-9,y);
+  }
+  for(let i=0;i<=4;i++){
+    const x=pad.l+pw*i/4,time=start+WINDOW_MS*i/4;
+    ctx.fillStyle="#8fa1b7";ctx.textAlign=i===0?"left":i===4?"right":"center";ctx.textBaseline="top";
+    ctx.fillText(i===4?"now":new Date(time).toLocaleString([],{weekday:"short",hour:"2-digit",minute:"2-digit"}),x,h-pad.b+10);
+  }
+  if(!visible.length){ctx.fillStyle="#8fa1b7";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText("No measurements in this period",pad.l+pw/2,pad.t+ph/2);return}
+  const points=compact(visible,Math.max(200,Math.floor(pw*2)));
+  const x=point=>pad.l+(point.time-start)/WINDOW_MS*pw;
+  const y=point=>pad.t+ph-(Math.max(0,point.value)/max)*ph;
+  const gradient=ctx.createLinearGradient(0,pad.t,0,pad.t+ph);gradient.addColorStop(0,"rgba(56,189,248,.24)");gradient.addColorStop(1,"rgba(56,189,248,0)");
+  ctx.beginPath();ctx.moveTo(x(points[0]),pad.t+ph);for(const point of points)ctx.lineTo(x(point),y(point));ctx.lineTo(x(points[points.length-1]),pad.t+ph);ctx.closePath();ctx.fillStyle=gradient;ctx.fill();
+  ctx.beginPath();for(let i=0;i<points.length;i++){const point=points[i];if(i)ctx.lineTo(x(point),y(point));else ctx.moveTo(x(point),y(point))}ctx.strokeStyle="#38bdf8";ctx.lineWidth=2;ctx.lineJoin="round";ctx.stroke();
+}
+addEventListener("resize",drawChart);
+refresh(true);
+setInterval(()=>refresh(false),REFRESH_MS);
+</script>
+</body>
+</html>
