@@ -183,7 +183,9 @@ cdc_acm
 The name has no `.ko` suffix, and Freetz-ng requires `-` to be written as `_`
 in this field. This tells Freetz-ng's image assembly to copy the generated
 `cdc-acm.ko` into the firmware. It does not enable the driver in the Linux
-kernel configuration; that is the next step.
+kernel configuration. **Own Modules and kernel configuration are independent;
+selecting `cdc_acm` here does not set `CONFIG_USB_ACM`.** The separate
+`make kernel-menuconfig` step below is mandatory.
 
 Ensure the image also includes an `ip` utility with route support and the
 module-loading tools used by the scripts (`modprobe`, with `insmod` as the
@@ -219,16 +221,18 @@ separate menuconfig entry in this overlay.
 
 `make menuconfig` is not sufficient by itself for CDC ACM. Freetz-ng has no
 dedicated `FREETZ_MODULE_cdc_acm` selection that automatically changes the
-Linux kernel configuration. After selecting and saving the router model and
-firmware in `make menuconfig`, run this inside the container:
+Linux kernel configuration, and this overlay intentionally does not patch
+Freetz-ng's core module mapping. After selecting and saving the router model,
+firmware, packages, and `cdc_acm` Own Modules entry in `make menuconfig`, run
+this inside the container:
 
 ```sh
 make kernel-menuconfig
 ```
 
 In the kernel menu, press `/`, search for `CONFIG_USB_ACM`, and set **USB Modem
-(CDC ACM) support** to `M` (module). Its usual menu path on the 2.6.32 target
-is:
+(CDC ACM) support** to `M` (module). The verified path for FRITZ!Box 3272 with
+Linux 2.6.32.61 is:
 
 ```text
 Device Drivers
@@ -240,7 +244,9 @@ Device Drivers
 Save when leaving. Freetz-ng copies the kernel configuration back to the
 selected target profile under its own `make/kernel/configs/freetz` directory.
 That changed profile belongs to the Freetz-ng checkout; it is generated
-configuration state and is not supplied by this overlay.
+configuration state and is not supplied by this overlay. Repeat this step for
+a fresh Freetz-ng clone or after switching to a target profile where
+`CONFIG_USB_ACM` is not already `m`.
 
 Selecting `pppd` in the main menu normally supplies the PPP module selections
 needed for this serial link. In `kernel-menuconfig`, confirm that **PPP
@@ -248,6 +254,12 @@ support** and **PPP support for async serial ports** are `M` if the selected
 target did not already enable them. There is no need to enable PPP compression
 or MPPE solely for the ESP32 link because the supplied PPP options disable
 compression.
+
+Before building, the complete CDC ACM sequence is therefore:
+
+1. In `make menuconfig`, set **Kernel modules → Own Modules** to `cdc_acm`.
+2. In `make kernel-menuconfig`, set **USB Modem (CDC ACM) support** to `M`.
+3. Save both configurations and run `make`.
 
 ## Build the firmware
 

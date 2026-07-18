@@ -67,6 +67,6 @@ $(MQTT2SQLITE_TARGET): $(MQTT2SQLITE_BINARY)
 	$(TARGET_STRIP) $@
 
 # Ensure the precompiled target builds and installs the executable.
-$(pkg)-precompiled--int: $(MQTT2SQLITE_TARGET)
+$(pkg)-precompiled: $(MQTT2SQLITE_TARGET)
 
 $(PKG_FINISH)

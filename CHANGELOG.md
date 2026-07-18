@@ -1,5 +1,18 @@
 # Change Log
 
+## 2026-07-18 — Freetz-ng clean-build correction
+
+- Corrected the `mqtt-grafana` recipe to use SQLite headers from the target
+  staging directory instead of emitting a bare `-I` when the SQLite source
+  directory is not present.
+- Switched the local MQTT packages to Freetz-ng's standard package-level
+  `precompiled` dependency pattern and removed redundant post-build tests.
+- Added rebuild tracking for the configurable Grafana database path, row
+  limit, and allowed client address, and bumped `mqtt-grafana` to 1.0.4.
+- Clarified the intentionally manual CDC ACM configuration: `cdc_acm` in Own
+  Modules installs the result, while `make kernel-menuconfig` must separately
+  set `CONFIG_USB_ACM=m` for each fresh target profile.
+
 ## 2026-07-18 — Freetz-ng router integration and telemetry export
 
 - Added a copyable Freetz-ng overlay with an ESP32 PPP addon, boot integration,

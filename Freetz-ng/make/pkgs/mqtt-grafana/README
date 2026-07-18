@@ -20,6 +20,8 @@ The endpoint returns timestamps in milliseconds for Grafana and preserves the
 original payload. A numeric value field is set when the complete payload is a
 valid finite number.
 
-Build note for version 1.0.1:
+Build notes:
 The CGI links libm after libsqlite3 because numeric MQTT payload handling uses
-floating-point classification functions such as isfinite().
+floating-point classification functions such as isfinite(). SQLite headers
+come from the target staging directory populated by the declared sqlite
+dependency. Changing a menuconfig endpoint option triggers a package rebuild.
