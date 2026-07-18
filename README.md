@@ -4,6 +4,15 @@ ESP32C3 as AP with PPP connection via USB-C and local mqtt_broker
 The ESP32-C3 opens a WLAN Access point where clients can connect to and access the local MQTT Broker.
 It also exposes a simple status/config web UI and shows MQTT power telemetry on a small OLED.
 
+## Freetz-ng integration
+
+The [`Freetz-ng` overlay](Freetz-ng/README.md) contains files that can be
+copied directly into a Freetz-ng source tree. It adds the router-side USB ACM
+and PPP setup, MQTT-to-SQLite collection, and an optional JSON endpoint for
+Grafana. The linked guide covers target compatibility, copying the overlay,
+the Docker build environment, `make menuconfig`, package selection, `make`,
+flashing, runtime checks, and troubleshooting.
+
 ## Usage
 The ESP32 is connected to the host via USB. The "endpoint" on the host is usually something like /dev/ttyACM0.
 The internal IP of the ESP32 is 192.168.4.1 in the 192.168.4.0/24 subnet

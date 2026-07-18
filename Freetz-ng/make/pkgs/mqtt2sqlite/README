@@ -4,9 +4,10 @@ mqtt2sqlite
 Robust MQTT->SQLite collector.
 
 Env vars:
-  MQTT_BROKER (default 192.168.178.50)
+  MQTT_BROKER (default 192.168.178.250)
   MQTT_PORT (default 1883)
-  MQTT_TOPIC (default #)
+  MQTT_TOPICS (comma- or whitespace-separated topics)
+  MQTT_TOPIC (legacy single topic; default # if no topics are otherwise set)
   MQTT_DB_PATH (default ./mqtt_messages.db)
   NETWORK_FIX_SCRIPT (default ./handle_network_error.sh)
   RECONNECT_MIN_S (default 2)
@@ -17,3 +18,19 @@ Env vars:
 Binary installed to:
   /usr/bin/mqtt_to_sqlite
 
+Topics may also be supplied with a repeatable command-line option:
+  mqtt_to_sqlite -t 'obk_wr/power/get' -t 'obk_wr/energycounter/get'
+
+Topic precedence:
+  1. Repeated -t/--topic arguments
+  2. MQTT_TOPICS
+  3. MQTT_TOPIC
+  4. #
+
+The collector creates a messages table with Unix-second timestamps, topic,
+payload, QoS, and retain flag. SQLite uses WAL mode so a read-only client such
+as mqtt-grafana can query the database while messages are being inserted.
+
+For persistent storage on a FRITZ!Box, set MQTT_DB_PATH to an absolute path on
+mounted USB storage. Ensure the storage is mounted before starting the
+collector. Set MQTT_LOG_INSERTS=1 for per-message diagnostic logging.

@@ -1,0 +1,14 @@
+#!/bin/sh
+IF="$1"
+echo "PPP down on $IF, cleaning up..."
+
+# Optional: remove route (not required if you use 'replace' above)
+# /sbin/ip route del 192.168.4.0/24 dev "$IF" 2>/dev/null
+
+# Stop mqtt_to_sql if it depends on PPP
+if [ -f /var/run/mqtt_to_sqlite.pid ]; then
+  kill "$(cat /var/run/mqtt_to_sqlite.pid)" 2>/dev/null
+  rm -f /var/run/mqtt_to_sqlite.pid
+fi
+
+exit 0

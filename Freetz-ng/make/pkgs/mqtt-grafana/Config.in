@@ -1,0 +1,31 @@
+config FREETZ_PACKAGE_MQTT_GRAFANA
+	bool "mqtt-grafana (SQLite JSON endpoint)"
+	default n
+	select FREETZ_LIB_libsqlite3
+	help
+	  Read-only CGI endpoint for Grafana. It exposes MQTT messages stored
+	  by mqtt2sqlite as JSON through the Freetz web server on port 81.
+
+if FREETZ_PACKAGE_MQTT_GRAFANA
+
+config FREETZ_PACKAGE_MQTT_GRAFANA_DB_PATH
+	string "SQLite database path"
+	default "/var/media/ftp/Verbatim-STORENGO-01/mqtt_messages.db"
+	help
+	  Absolute path to the SQLite database created by mqtt_to_sqlite.
+
+config FREETZ_PACKAGE_MQTT_GRAFANA_MAX_ROWS
+	int "Maximum rows per request"
+	range 1 100000
+	default 20000
+	help
+	  Hard upper bound for rows returned by one HTTP request.
+
+config FREETZ_PACKAGE_MQTT_GRAFANA_ALLOWED_IP
+	string "Allowed client IP (empty permits all authenticated clients)"
+	default ""
+	help
+	  Exact REMOTE_ADDR allowed to use the endpoint, normally the Grafana
+	  host IPv4 or IPv6 address. Leave empty to rely on port-81 authentication.
+
+endif

@@ -1,0 +1,2 @@
+This marker keeps the static Freetz package root directory in the package payload.
+The build replaces/adds mqtt-grafana.cgi in this directory.

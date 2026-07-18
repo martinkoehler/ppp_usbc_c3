@@ -1,5 +1,24 @@
 # Change Log
 
+## 2026-07-18 — Freetz-ng router integration and telemetry export
+
+- Added a copyable Freetz-ng overlay with an ESP32 PPP addon, boot integration,
+  PPP reconnect settings, route hooks, and collector lifecycle handling.
+- Matched the overlay layout to the working Freetz-ng tree by removing the
+  accidental extra addon/package directory level. CDC ACM is built for the
+  selected target using `make kernel-menuconfig` and installed through
+  Freetz-ng's **Kernel modules → Own Modules** setting; the overlay no longer
+  carries a target-specific binary or generated kernel profiles.
+- Extended `mqtt2sqlite` with repeated `-t`/`--topic` subscriptions,
+  `MQTT_TOPICS`, legacy `MQTT_TOPIC` fallback, multi-topic reconnect
+  subscriptions, and corrected clean-build dependency discovery.
+- Added the configurable `mqtt-grafana` package: a read-only SQLite-to-JSON CGI
+  endpoint with time/topic/row filtering, numeric payload conversion, health
+  reporting, a request limit, and optional source-IP restriction.
+- Documented the complete overlay copy, Docker-based menuconfig/build,
+  deployment, runtime, and troubleshooting workflow, including target-specific
+  kernel-module and current PPP filename compatibility checks.
+
 ## 2026-07-16 — Automatic Wi-Fi channel selection
 
 - Enabled automatic SoftAP channel selection by default using weighted scans

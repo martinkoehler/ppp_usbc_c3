@@ -1,0 +1,7 @@
+#!/bin/sh
+# rc.custom runs near end of boot in Freetz
+
+# Load USB serial ACM driver if not already loaded
+if ! grep -q '^cdc_acm' /proc/modules; then
+  modprobe cdc-acm 2>/dev/null || insmod /lib/modules/$(uname -r)/kernel/drivers/usb/class/cdc-acm.ko
+fi

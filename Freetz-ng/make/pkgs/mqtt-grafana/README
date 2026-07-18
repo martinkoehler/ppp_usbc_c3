@@ -1,0 +1,25 @@
+mqtt-grafana
+============
+
+Read-only SQLite-to-JSON CGI endpoint for the Freetz web server on port 81.
+
+Installed URL:
+  http://fritz.box:81/cgi-bin/mqtt-grafana.cgi
+
+Parameters:
+  from=UNIX_SECONDS       default: now - 3600
+  to=UNIX_SECONDS         default: now
+  topic=MQTT_TOPIC        optional exact match
+  limit=ROWS              default: 2000, capped by menuconfig value
+  mode=health             database health/latest timestamp response
+
+Example:
+  /cgi-bin/mqtt-grafana.cgi?topic=sensor/temp&from=1700000000&to=1700003600
+
+The endpoint returns timestamps in milliseconds for Grafana and preserves the
+original payload. A numeric value field is set when the complete payload is a
+valid finite number.
+
+Build note for version 1.0.1:
+The CGI links libm after libsqlite3 because numeric MQTT payload handling uses
+floating-point classification functions such as isfinite().

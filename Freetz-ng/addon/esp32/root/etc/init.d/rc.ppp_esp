@@ -1,0 +1,66 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          ppp_esp
+# Required-Start:    $network
+# Required-Stop:
+# Default-Start:     2 3 5
+# Default-Stop:      0 1 6
+### END INIT INFO
+
+PPPD=/usr/sbin/pppd
+DEFAULTDIR=/etc/default.esp32/ppp
+RUNTIMEDIR=/mod/etc/ppp
+CFG=$RUNTIMEDIR/esp32c3.conf
+PIDFILE=/var/run/ppp-esp.pid
+
+seed_files() {
+  mkdir -p /etc/ppp "$RUNTIMEDIR"
+
+  # seed runtime config if not present
+  if [ ! -f "$CFG" ] && [ -f "$DEFAULTDIR/esp32c3.conf" ]; then
+    cp "$DEFAULTDIR/esp32c3.conf" "$CFG"
+  fi
+
+  # install PPP hooks if missing or changed
+  for f in ip-up ip-down; do
+    if [ -f "$DEFAULTDIR/$f" ]; then
+      if [ ! -f "/etc/ppp/$f" ] || ! cmp -s "$DEFAULTDIR/$f" "/etc/ppp/$f"; then
+        install -m 755 "$DEFAULTDIR/$f" "/etc/ppp/$f"
+      fi
+    fi
+  done
+}
+
+start() {
+  echo "Starting PPP for ESP32-C3..."
+  seed_files
+
+  modprobe cdc-acm 2>/dev/null
+
+  if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+    echo "pppd already running"
+    return 0
+  fi
+
+  # let pppd write the pidfile we manage
+  "$PPPD" file "$CFG" pidfile "$PIDFILE" &
+}
+
+stop() {
+  echo "Stopping PPP for ESP32-C3..."
+  if [ -f "$PIDFILE" ]; then
+    kill "$(cat "$PIDFILE")" 2>/dev/null
+    rm -f "$PIDFILE"
+  fi
+}
+
+restart() {
+  stop
+  sleep 1
+  start
+}
+
+case "$1" in
+  start|stop|restart) "$1" ;;
+  *) echo "Usage: $0 {start|stop|restart}" ;;
+esac
