@@ -7,8 +7,8 @@ packages with `make menuconfig`, and build the firmware with `make`.
 
 The overlay adds:
 
-- a static `esp32` addon with PPP configuration, boot scripts, routing hooks,
-  and automatic start/stop of the MQTT collector;
+- the `esp32c3` integration package, which configures USB PPP, routing, and
+  automatic start/stop of the MQTT collector from one menuconfig submenu;
 - the `mqtt2sqlite` package, which subscribes to MQTT topics and stores the
   messages in SQLite; and
 - the `mqtt-grafana` package, a read-only JSON CGI endpoint for querying that
@@ -39,9 +39,9 @@ cp -a ppp_usbc_c3/Freetz-ng/. freetz-ng/
 ```
 
 The trailing slash on the rsync source, or `/.` with `cp`, is significant:
-after copying, paths such as
-`freetz-ng/addon/static.pkg` and `freetz-ng/make/pkgs/mqtt2sqlite` must exist.
-Do not end up with `freetz-ng/Freetz-ng/...`.
+after copying, paths such as `freetz-ng/make/pkgs/esp32c3` and
+`freetz-ng/make/pkgs/mqtt2sqlite` must exist. Do not end up with
+`freetz-ng/Freetz-ng/...`.
 
 Do **not** add `--delete` to this rsync command. The overlay is only a sparse
 set of additions to a much larger Freetz-ng tree; a root-level `--delete`
@@ -51,47 +51,33 @@ new overlay version should also be removed from an existing destination.
 Review the overlay repository's changes when updating and remove explicitly
 retired destination files by their exact paths.
 
-When upgrading from an older version of this overlay, remove its two retired
-legacy boot scripts from the destination. Inspect a top-level `rc.custom`
-first if it may contain unrelated local configuration:
+When upgrading from the former static-addon version of this overlay, remove
+the retired addon after copying the new package. Also remove the old `esp32`
+line from `addon/static.pkg`. Inspect a top-level `rc.custom` first if it may
+contain unrelated local configuration:
 
 ```sh
-rm freetz-ng/addon/esp32/root/etc/init.d/rc.custom
-rm freetz-ng/rc.custom
+rm -rf freetz-ng/addon/esp32
+sed -i '/^[[:space:]]*esp32[[:space:]]*$/d' freetz-ng/addon/static.pkg
+rm -f freetz-ng/rc.custom
 ```
 
-The PPP init script now handles module loading, reconnects, routing, and the
-collector lifecycle. Do not install the former large `rc.custom` on the
-router, because it would start competing pppd and collector processes.
+The packaged PPP init script handles module loading, reconnects, routing, and
+the collector lifecycle. Do not install the former large `rc.custom` on the
+router, because it would start competing pppd and collector processes. The
+new overlay does not replace `addon/static.pkg`.
 
-`addon/static.pkg` is part of the overlay and lists the `esp32` addon. If the
-destination tree already has a customized `addon/static.pkg`,
-merge the two addon lists instead of losing the existing entries. Running the
-copy in a clean Git worktree makes overwritten and added files easy to audit:
+Running the copy in a clean Git worktree makes overwritten and added files
+easy to audit:
 
 ```sh
 cd freetz-ng
 git status --short
-git diff -- addon/static.pkg make/pkgs/mqtt2sqlite
+git diff -- make/pkgs/esp32c3 make/pkgs/mqtt2sqlite make/pkgs/mqtt-grafana
 ```
 
 Re-copying the overlay after an update is supported, but it overwrites files
 with the same names. Preserve any local configuration changes first.
-
-### Configure the overlay files
-
-Review the serial device and speed, PPP addresses, ESP32 subnet route, and
-MQTT settings in the supplied files. By default, `ip-up` connects the
-collector to the ESP32 broker at `192.168.178.250:1883`, subscribes to the two
-power topics, and writes to:
-
-```text
-/var/media/ftp/Verbatim-STORENGO-01/mqtt_messages.db
-```
-
-This is also the default database path compiled into `mqtt-grafana`. Change
-both settings if the USB volume has a different mount name. The storage must
-be mounted and writable before the PPP link comes up.
 
 ## Configure the firmware
 
@@ -124,35 +110,55 @@ make menuconfig
 ```
 
 First select the correct FRITZ!Box model, firmware version, and normal image
-options required by that Freetz-ng checkout. Then enable these overlay
-packages:
+options required by that Freetz-ng checkout. Then enable **esp32c3 USB PPP and
+MQTT integration** (`FREETZ_PACKAGE_ESP32C3`) under **Packages**. Menu
+locations can change between Freetz-ng revisions; press `/`, search for the
+exact symbol, and use the result to jump to its current location.
 
-- `mqtt2sqlite (MQTT -> SQLite collector)`
-- `mqtt-grafana (SQLite JSON endpoint)` if the database should be queried over
-  HTTP
+The integration package automatically selects:
 
-Menu locations can change between Freetz-ng revisions. In menuconfig, press
-`/` and search for the exact symbols `FREETZ_PACKAGE_MQTT2SQLITE` and
-`FREETZ_PACKAGE_MQTT_GRAFANA`; the result shows the current menu path and lets
-you jump to it. Enabling the packages selects their declared dependencies:
+- **Point-to-Point** (`FREETZ_PACKAGE_PPP`);
+- **pppd 2.4.7 - DEPRECATED** (`FREETZ_PACKAGE_PPPD`);
+- `mqtt2sqlite`, the Mosquitto library plus the small `mosquitto_sub`
+  diagnostic client, and SQLite; and
+- `mqtt-grafana` and its SQLite dependency when **Include mqtt-grafana JSON
+  endpoint** is enabled.
 
-- `mqtt2sqlite`: Mosquitto client library and SQLite
-- `mqtt-grafana`: SQLite
+Freetz-ng's current Mosquitto package has no library-only menu choice; it
+installs `libmosquitto` only when at least one client is selected. Therefore
+the integration includes `mosquitto_sub`, which is also useful for testing.
+The router-side broker is enabled by Freetz-ng's Mosquitto default but is not
+used by this integration. To leave it out of the image, open the Mosquitto
+submenu and clear **include broker server**; the selected client keeps the
+required library in the image. mqtt2sqlite connects to the broker embedded in
+the ESP32-C3.
 
-Enable PPP in this order because the `pppd` entry is hidden until the base PPP
-package is selected:
+`pppd` selects the required PPP kernel-module symbols, including `ppp_generic`
+and `ppp_async`, when the target does not already provide them. The **ppp
+dial-up-network** web interface, `pppd chat`, PPP CGI, and EAP-TLS options are
+not required.
 
-1. Open **Packages → Web interfaces** and enable **Point-to-Point**
-   (`FREETZ_PACKAGE_PPP`).
-2. Return to **Packages** and enable **pppd 2.4.7 - DEPRECATED**
-   (`FREETZ_PACKAGE_PPPD`).
+Configure these values in the `esp32c3` submenu as needed:
 
-The second selection installs `/usr/sbin/pppd` and selects the required PPP
-kernel-module symbols, including `ppp_generic` and `ppp_async`, when the target
-does not already provide them. The **ppp dial-up-network** web interface,
-`pppd chat`, PPP CGI, and EAP-TLS options are not required by these scripts.
-Press `/` and search for `FREETZ_PACKAGE_PPP` and then
-`FREETZ_PACKAGE_PPPD` if either entry is difficult to locate.
+- USB serial device and baud rate;
+- FRITZ!Box and ESP32-C3 PPP addresses, offered DNS address, and routed Wi-Fi
+  subnet;
+- MQTT broker address and port, topic filters, client ID, and reconnect
+  timing;
+- network-repair command and per-insert logging; and
+- the persistent SQLite database path.
+
+When Grafana support is enabled, the same submenu also exposes its maximum
+rows and optional allowed-client address. mqtt-grafana receives the database
+path from the integration package, so the writer and reader cannot be
+configured to use different paths accidentally. The default is:
+
+```text
+/var/media/ftp/Verbatim-STORENGO-01/mqtt_messages.db
+```
+
+Change it if the USB volume has a different mount name. The storage must be
+mounted and writable before the PPP link comes up.
 
 Set **Level of user competence** to **Expert** if the **Kernel modules** menu
 is hidden; Freetz-ng exposes that menu only in Expert or Developer mode.
@@ -171,34 +177,22 @@ selecting `cdc_acm` here does not set `CONFIG_USB_ACM`.** The separate
 `make kernel-menuconfig` step below is mandatory.
 
 Ensure the image also includes an `ip` utility with route support and the
-module-loading tools used by the scripts (`modprobe`, with `insmod` as the
-fallback). The exact symbols differ by Freetz-ng target and revision, so
-verify the generated image rather than assuming the utilities are supplied by
-the base firmware.
+`modprobe` module-loading utility used by the scripts. The exact symbols
+differ by Freetz-ng target and revision, so verify the generated image rather
+than assuming the utilities are supplied by the base firmware.
 
-For the checked working 3272 configuration, the main selections include
-`FREETZ_PACKAGE_PPPD=y`, `FREETZ_PACKAGE_PPP=y`,
-`FREETZ_PACKAGE_MQTT2SQLITE=y`, and `FREETZ_PACKAGE_MQTT_GRAFANA=y`.
-
-When `mqtt-grafana` is enabled, configure its submenu:
-
-- **SQLite database path**: absolute path to the database written by the
-  collector. Prefer persistent USB storage; `/var` is generally temporary.
-- **Maximum rows per request**: hard cap for one CGI response.
-- **Allowed client IP**: optional exact `REMOTE_ADDR` match for the Grafana
-  host. Leave empty to allow all clients that can authenticate to the Freetz
-  web server.
+For the checked working 3272 configuration, the main selection is
+`FREETZ_PACKAGE_ESP32C3=y`; its selected dependencies include
+`FREETZ_PACKAGE_PPPD=y`, `FREETZ_PACKAGE_PPP=y`, and
+`FREETZ_PACKAGE_MQTT2SQLITE=y`.
 
 Save the configuration when leaving menuconfig. Freetz-ng writes it to
 `.config`. It is worth confirming the important selections before the build:
 
 ```sh
-grep -E 'FREETZ_PACKAGE_(MQTT2SQLITE|MQTT_GRAFANA)' .config
+grep -E 'FREETZ_PACKAGE_(ESP32C3|MQTT2SQLITE|MQTT_GRAFANA)' .config
 grep -E 'FREETZ_PACKAGE_(PPP|PPPD)=|FREETZ_MODULES_OWN=' .config
 ```
-
-The static ESP32 addon is activated by `addon/static.pkg`; it does not have a
-separate menuconfig entry in this overlay.
 
 ### Configure the kernel
 
@@ -274,8 +268,8 @@ under `~/freetz-docker/vol/git/freetz-ng/images`.
 ## Runtime operation
 
 During the build, Freetz-ng compiles and installs the selected CDC ACM and PPP
-modules, while the static addon installs the ESP32 files. At boot, the
-`S80ppp_esp` link invokes `rc.ppp_esp`, which:
+modules, while the `esp32c3` package installs its generated configuration and
+scripts. At boot, the `S80ppp_esp` link invokes `rc.ppp_esp`, which:
 
 1. creates the runtime PPP directory;
 2. seeds the PPP options and installs the `ip-up`/`ip-down` hooks;
@@ -350,8 +344,9 @@ Do not expose it directly to the Internet.
   Modules** in `make menuconfig`; both steps are required.
 - **`Invalid module format`:** remove any stale manually copied module and
   rebuild it through Freetz-ng for the selected target kernel.
-- **PPP config is not seeded:** resolve the filename/path mismatch described
-  under “Current PPP filename check”, then rebuild the image.
+- **New PPP menu settings have no effect:** the init script preserves an
+  existing `/mod/etc/ppp/esp32c3.config`. Remove that runtime copy and restart
+  `rc.ppp_esp` to seed the newly built defaults.
 - **PPP starts but the ESP32 subnet is unreachable:** compare the negotiated
   addresses with `esp32c3.config` and check the route installed by `ip-up`.
 - **No database:** use an absolute writable `MQTT_DB_PATH`, ensure its parent

@@ -1,0 +1,115 @@
+config FREETZ_PACKAGE_ESP32C3
+	bool "esp32c3 USB PPP and MQTT integration"
+	default n
+	depends on (FREETZ_REPLACE_MODULE_AVAILABLE && !FREETZ_KERNEL_VERSION_2_6_28) || FREETZ_REPLACE_KERNEL
+	select FREETZ_PACKAGE_PPP
+	select FREETZ_PACKAGE_PPPD
+	select FREETZ_PACKAGE_MQTT2SQLITE
+	help
+	  Connect an ESP32-C3 over USB CDC ACM and PPP, route its Wi-Fi
+	  subnet, and collect messages from its MQTT broker in SQLite.
+
+if FREETZ_PACKAGE_ESP32C3
+
+config FREETZ_PACKAGE_ESP32C3_WITH_GRAFANA
+	bool "Include mqtt-grafana JSON endpoint"
+	default y
+	select FREETZ_PACKAGE_MQTT_GRAFANA
+	help
+	  Include the read-only CGI endpoint for querying the collector database.
+
+comment "PPP connection"
+
+config FREETZ_PACKAGE_ESP32C3_SERIAL_DEVICE
+	string "USB serial device"
+	default "/dev/ttyACM0"
+
+config FREETZ_PACKAGE_ESP32C3_SERIAL_BAUD
+	int "Serial baud rate"
+	range 1200 4000000
+	default 115200
+
+config FREETZ_PACKAGE_ESP32C3_PPP_LOCAL_IP
+	string "FRITZ!Box PPP address"
+	default "192.168.178.83"
+
+config FREETZ_PACKAGE_ESP32C3_PPP_REMOTE_IP
+	string "ESP32-C3 PPP address"
+	default "192.168.178.250"
+
+config FREETZ_PACKAGE_ESP32C3_PPP_DNS
+	string "DNS address offered over PPP"
+	default "192.168.178.1"
+
+config FREETZ_PACKAGE_ESP32C3_ROUTE_NET
+	string "ESP32-C3 routed Wi-Fi subnet"
+	default "192.168.4.0/24"
+
+comment "MQTT to SQLite collector"
+
+config FREETZ_PACKAGE_ESP32C3_MQTT_BROKER
+	string "MQTT broker address"
+	default "192.168.178.250"
+
+config FREETZ_PACKAGE_ESP32C3_MQTT_PORT
+	int "MQTT broker port"
+	range 1 65535
+	default 1883
+
+config FREETZ_PACKAGE_ESP32C3_MQTT_TOPICS
+	string "MQTT topics (comma- or space-separated)"
+	default "+/power/get,+/energycounter/get"
+
+config FREETZ_PACKAGE_ESP32C3_MQTT_DB_PATH
+	string "SQLite database path"
+	default "/var/media/ftp/Verbatim-STORENGO-01/mqtt_messages.db"
+	help
+	  Use an absolute path on persistent storage. mqtt-grafana uses this
+	  same value when it is selected through the esp32c3 package.
+
+config FREETZ_PACKAGE_ESP32C3_MQTT_CLIENT_ID
+	string "MQTT client ID"
+	default "fritzbox-mqtt2sqlite"
+
+config FREETZ_PACKAGE_ESP32C3_NETWORK_FIX_SCRIPT
+	string "Network repair command"
+	default "/bin/true"
+	help
+	  Command run after a broker connection error. /bin/true disables
+	  active repair while retaining the collector's reconnect loop.
+
+config FREETZ_PACKAGE_ESP32C3_RECONNECT_MIN_S
+	int "Minimum reconnect delay (seconds)"
+	range 0 86400
+	default 2
+
+config FREETZ_PACKAGE_ESP32C3_RECONNECT_MAX_S
+	int "Maximum reconnect delay (seconds)"
+	range 0 86400
+	default 60
+
+config FREETZ_PACKAGE_ESP32C3_RETRY_SLEEP_AFTER_SCRIPT_S
+	int "Delay after network repair command (seconds)"
+	range 0 86400
+	default 5
+
+config FREETZ_PACKAGE_ESP32C3_MQTT_LOG_INSERTS
+	bool "Log every SQLite insert"
+	default n
+
+if FREETZ_PACKAGE_ESP32C3_WITH_GRAFANA
+
+comment "mqtt-grafana"
+
+config FREETZ_PACKAGE_ESP32C3_GRAFANA_MAX_ROWS
+	int "Maximum rows per request"
+	range 1 100000
+	default 20000
+
+config FREETZ_PACKAGE_ESP32C3_GRAFANA_ALLOWED_IP
+	string "Allowed client IP (empty permits all authenticated clients)"
+	default ""
+
+endif
+
+endif

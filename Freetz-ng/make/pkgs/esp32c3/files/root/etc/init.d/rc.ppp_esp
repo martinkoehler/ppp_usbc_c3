@@ -16,12 +16,12 @@ PIDFILE=/var/run/ppp-esp.pid
 seed_files() {
   mkdir -p /etc/ppp "$RUNTIMEDIR"
 
-  # seed runtime config if not present
+  # Preserve an existing runtime PPP configuration across firmware updates.
   if [ ! -f "$CFG" ] && [ -f "$DEFAULTDIR/esp32c3.config" ]; then
     cp "$DEFAULTDIR/esp32c3.config" "$CFG"
   fi
 
-  # install PPP hooks if missing or changed
+  # PPP hooks are firmware-owned and updated when their defaults change.
   for f in ip-up ip-down; do
     if [ -f "$DEFAULTDIR/$f" ]; then
       if [ ! -f "/etc/ppp/$f" ] || ! cmp -s "$DEFAULTDIR/$f" "/etc/ppp/$f"; then
@@ -42,7 +42,6 @@ start() {
     return 0
   fi
 
-  # let pppd write the pidfile we manage
   "$PPPD" file "$CFG" pidfile "$PIDFILE" &
 }
 

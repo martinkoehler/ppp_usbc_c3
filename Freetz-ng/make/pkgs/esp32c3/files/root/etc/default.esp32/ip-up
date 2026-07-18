@@ -1,0 +1,22 @@
+#!/bin/sh
+# Arguments: interface tty speed localIP remoteIP ipparam
+IF="$1"
+
+echo "PPP up on $IF, adding routes..."
+/sbin/ip route replace "@ROUTE_NET@" via "@PPP_REMOTE_IP@" dev "$IF"
+
+# Start mqtt_to_sqlite after routes are in place.
+export MQTT_BROKER="@MQTT_BROKER@"
+export MQTT_PORT="@MQTT_PORT@"
+export MQTT_TOPICS="@MQTT_TOPICS@"
+export MQTT_DB_PATH="@MQTT_DB_PATH@"
+export MQTT_CLIENT_ID="@MQTT_CLIENT_ID@"
+export NETWORK_FIX_SCRIPT="@NETWORK_FIX_SCRIPT@"
+export RECONNECT_MIN_S="@RECONNECT_MIN_S@"
+export RECONNECT_MAX_S="@RECONNECT_MAX_S@"
+export RETRY_SLEEP_AFTER_SCRIPT_S="@RETRY_SLEEP_AFTER_SCRIPT_S@"
+export MQTT_LOG_INSERTS="@MQTT_LOG_INSERTS@"
+/usr/bin/mqtt_to_sqlite &
+echo $! > /var/run/mqtt_to_sqlite.pid
+
+exit 0

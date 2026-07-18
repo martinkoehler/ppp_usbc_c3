@@ -9,20 +9,23 @@ config FREETZ_PACKAGE_MQTT_GRAFANA
 if FREETZ_PACKAGE_MQTT_GRAFANA
 
 config FREETZ_PACKAGE_MQTT_GRAFANA_DB_PATH
-	string "SQLite database path"
+	string "SQLite database path" if !FREETZ_PACKAGE_ESP32C3
+	default FREETZ_PACKAGE_ESP32C3_MQTT_DB_PATH if FREETZ_PACKAGE_ESP32C3
 	default "/var/media/ftp/Verbatim-STORENGO-01/mqtt_messages.db"
 	help
 	  Absolute path to the SQLite database created by mqtt_to_sqlite.
 
 config FREETZ_PACKAGE_MQTT_GRAFANA_MAX_ROWS
-	int "Maximum rows per request"
+	int "Maximum rows per request" if !FREETZ_PACKAGE_ESP32C3
 	range 1 100000
+	default FREETZ_PACKAGE_ESP32C3_GRAFANA_MAX_ROWS if FREETZ_PACKAGE_ESP32C3
 	default 20000
 	help
 	  Hard upper bound for rows returned by one HTTP request.
 
 config FREETZ_PACKAGE_MQTT_GRAFANA_ALLOWED_IP
-	string "Allowed client IP (empty permits all authenticated clients)"
+	string "Allowed client IP (empty permits all authenticated clients)" if !FREETZ_PACKAGE_ESP32C3
+	default FREETZ_PACKAGE_ESP32C3_GRAFANA_ALLOWED_IP if FREETZ_PACKAGE_ESP32C3
 	default ""
 	help
 	  Exact REMOTE_ADDR allowed to use the endpoint, normally the Grafana
