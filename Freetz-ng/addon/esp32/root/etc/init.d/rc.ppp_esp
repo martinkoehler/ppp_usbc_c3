@@ -8,17 +8,17 @@
 ### END INIT INFO
 
 PPPD=/usr/sbin/pppd
-DEFAULTDIR=/etc/default.esp32/ppp
+DEFAULTDIR=/etc/default.esp32
 RUNTIMEDIR=/mod/etc/ppp
-CFG=$RUNTIMEDIR/esp32c3.conf
+CFG=$RUNTIMEDIR/esp32c3.config
 PIDFILE=/var/run/ppp-esp.pid
 
 seed_files() {
   mkdir -p /etc/ppp "$RUNTIMEDIR"
 
   # seed runtime config if not present
-  if [ ! -f "$CFG" ] && [ -f "$DEFAULTDIR/esp32c3.conf" ]; then
-    cp "$DEFAULTDIR/esp32c3.conf" "$CFG"
+  if [ ! -f "$CFG" ] && [ -f "$DEFAULTDIR/esp32c3.config" ]; then
+    cp "$DEFAULTDIR/esp32c3.config" "$CFG"
   fi
 
   # install PPP hooks if missing or changed

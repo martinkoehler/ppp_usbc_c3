@@ -57,17 +57,6 @@ with the same names. Preserve any local configuration changes first.
 
 ### Configure the overlay files
 
-Before building, align the PPP init script with the supplied default filename.
-The overlay installs `/etc/default.esp32/esp32c3.config`, while `rc.ppp_esp`
-currently expects `/etc/default.esp32/ppp/esp32c3.conf`. Either move/rename the
-default file or change `addon/esp32/root/etc/init.d/rc.ppp_esp` to use:
-
-```sh
-DEFAULTDIR=/etc/default.esp32
-RUNTIMEDIR=/mod/etc/ppp
-CFG=$RUNTIMEDIR/esp32c3.config
-```
-
 The `ip-up` hook currently passes two comma-separated filters through the
 legacy singular `MQTT_TOPIC` variable. Change it to the plural variable so the
 collector creates two subscriptions:
