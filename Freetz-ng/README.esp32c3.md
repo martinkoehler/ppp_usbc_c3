@@ -1,4 +1,4 @@
-# Freetz-ng integration
+# ESP32-C3 Freetz-ng integration
 
 The contents of this directory form an overlay for a Freetz-ng source tree.
 They are not a standalone Freetz-ng checkout. Copy the contents of this
@@ -61,6 +61,28 @@ rm -rf freetz-ng/addon/esp32
 sed -i '/^[[:space:]]*esp32[[:space:]]*$/d' freetz-ng/addon/static.pkg
 rm -f freetz-ng/rc.custom
 ```
+
+Older overlay versions also installed this documentation as the destination
+tree's root `README.md`, overwriting Freetz-ng's own tracked document. If that
+file has no unrelated local edits, restore the upstream version once:
+
+```sh
+cd freetz-ng
+git restore README.md
+```
+
+The overlay documentation is now copied as `README.esp32c3.md`, which does not
+collide with Freetz-ng's README.
+
+When updating from `esp32c3` package version 1.0.0, remove the renamed init
+script left in the destination source tree by non-deleting rsync:
+
+```sh
+rm -f freetz-ng/make/pkgs/esp32c3/files/root/etc/init.d/rc.ppp_esp
+```
+
+Package version 1.0.2 then creates a fresh staging directory and no longer
+generates `S80ppp_esp`.
 
 The packaged PPP init script handles module loading, reconnects, routing, and
 the collector lifecycle. Do not install the former large `rc.custom` on the
@@ -269,12 +291,15 @@ under `~/freetz-docker/vol/git/freetz-ng/images`.
 
 During the build, Freetz-ng compiles and installs the selected CDC ACM and PPP
 modules, while the `esp32c3` package installs its generated configuration and
-scripts. At boot, the `S80ppp_esp` link invokes `rc.ppp_esp`, which:
+scripts. Freetz registers the selected package in `static.pkg`; during Freetz
+startup, `rc.mod` invokes `/etc/init.d/rc.esp32c3`, which:
 
 1. creates the runtime PPP directory;
 2. seeds the PPP options and installs the `ip-up`/`ip-down` hooks;
-3. loads `cdc-acm`; and
-4. starts `pppd` with a PID file.
+3. loads `cdc-acm`, `ppp_generic`, and `ppp_async`;
+4. creates the `/dev/ppp` character device (`108:0`) if the old target did not
+   populate it automatically; and
+5. starts `pppd` and records its process ID.
 
 When PPP comes up, `ip-up` installs the route to the ESP32 SoftAP subnet and
 starts `/usr/bin/mqtt_to_sqlite`. When PPP goes down, `ip-down` stops the
@@ -297,9 +322,9 @@ ls -l /path/to/mqtt_messages.db*
 Start, stop, or restart the PPP integration manually with:
 
 ```sh
-/etc/init.d/rc.ppp_esp start
-/etc/init.d/rc.ppp_esp stop
-/etc/init.d/rc.ppp_esp restart
+/etc/init.d/rc.esp32c3 start
+/etc/init.d/rc.esp32c3 stop
+/etc/init.d/rc.esp32c3 restart
 ```
 
 The collector accepts repeated command-line topics and environment-based
@@ -339,6 +364,9 @@ Do not expose it directly to the Internet.
 - **No `/dev/ttyACM0`:** check USB host mode, cable/data wiring, kernel logs,
   and whether `cdc_acm` loaded. Device numbering may change if other ACM
   devices are attached.
+- **pppd reports that `/dev/ppp` is missing:** verify that `ppp_generic` and
+  `ppp_async` loaded. Package version 1.0.2 creates `/dev/ppp` as character
+  device `108:0` before starting pppd.
 - **No `cdc-acm.ko` in the image:** set `CONFIG_USB_ACM=m` with
   `make kernel-menuconfig` and add `cdc_acm` to **Kernel modules → Own
   Modules** in `make menuconfig`; both steps are required.
@@ -346,7 +374,7 @@ Do not expose it directly to the Internet.
   rebuild it through Freetz-ng for the selected target kernel.
 - **New PPP menu settings have no effect:** the init script preserves an
   existing `/mod/etc/ppp/esp32c3.config`. Remove that runtime copy and restart
-  `rc.ppp_esp` to seed the newly built defaults.
+  `rc.esp32c3` to seed the newly built defaults.
 - **PPP starts but the ESP32 subnet is unreachable:** compare the negotiated
   addresses with `esp32c3.config` and check the route installed by `ip-up`.
 - **No database:** use an absolute writable `MQTT_DB_PATH`, ensure its parent

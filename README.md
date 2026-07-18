@@ -6,7 +6,7 @@ It also exposes a simple status/config web UI and shows MQTT power telemetry on 
 
 ## Freetz-ng integration
 
-The [`Freetz-ng` overlay](Freetz-ng/README.md) contains files that can be
+The [`Freetz-ng` overlay](Freetz-ng/README.esp32c3.md) contains files that can be
 copied directly into a Freetz-ng source tree. It adds the router-side USB ACM
 and PPP setup, MQTT-to-SQLite collection, and an optional JSON endpoint for
 Grafana. The linked guide covers target compatibility, copying the overlay,

@@ -25,24 +25,48 @@ seed_files() {
   for f in ip-up ip-down; do
     if [ -f "$DEFAULTDIR/$f" ]; then
       if [ ! -f "/etc/ppp/$f" ] || ! cmp -s "$DEFAULTDIR/$f" "/etc/ppp/$f"; then
-        install -m 755 "$DEFAULTDIR/$f" "/etc/ppp/$f"
+        cp "$DEFAULTDIR/$f" "/etc/ppp/$f"
+        chmod 755 "/etc/ppp/$f"
       fi
     fi
   done
 }
 
+prepare_devices() {
+  # These may already be built in or loaded; module-loading failures are
+  # diagnosed by pppd and the device checks below.
+  modprobe cdc-acm 2>/dev/null
+  modprobe ppp_generic 2>/dev/null
+  modprobe ppp_async 2>/dev/null
+
+  # This old target does not populate the PPP character device automatically.
+  if [ ! -e /dev/ppp ]; then
+    mknod /dev/ppp c 108 0 || {
+      echo "Unable to create /dev/ppp"
+      return 1
+    }
+    chmod 600 /dev/ppp
+  fi
+
+  if [ ! -c /dev/ppp ]; then
+    echo "/dev/ppp exists but is not a character device"
+    return 1
+  fi
+}
+
 start() {
   echo "Starting PPP for ESP32-C3..."
   seed_files
-
-  modprobe cdc-acm 2>/dev/null
+  prepare_devices || return 1
 
   if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
     echo "pppd already running"
     return 0
   fi
 
-  "$PPPD" file "$CFG" pidfile "$PIDFILE" &
+  # nodetach in the options file keeps this background PID attached to pppd.
+  "$PPPD" file "$CFG" &
+  echo $! > "$PIDFILE"
 }
 
 stop() {
@@ -60,6 +84,7 @@ restart() {
 }
 
 case "$1" in
-  start|stop|restart) "$1" ;;
-  *) echo "Usage: $0 {start|stop|restart}" ;;
+  ""|load|start) start ;;
+  stop|restart) "$1" ;;
+  *) echo "Usage: $0 {load|start|stop|restart}" ;;
 esac

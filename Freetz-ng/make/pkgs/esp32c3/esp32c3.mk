@@ -1,4 +1,4 @@
-$(call PKG_INIT_BIN, 1.0.0)
+$(call PKG_INIT_BIN, 1.0.2)
 
 $(PKG)_SOURCE :=
 $(PKG)_SITE   := none
@@ -22,7 +22,7 @@ $(PKG)_REBUILD_SUBOPTS += FREETZ_PACKAGE_ESP32C3_MQTT_LOG_INSERTS
 
 ESP32C3_DEFAULTDIR := $($(PKG)_DEST_DIR)/etc/default.esp32
 ESP32C3_INITDIR    := $($(PKG)_DEST_DIR)/etc/init.d
-ESP32C3_TARGET     := $(ESP32C3_INITDIR)/S80ppp_esp
+ESP32C3_TARGET     := $(ESP32C3_INITDIR)/rc.esp32c3
 
 $(ESP32C3_TARGET): $(PACKAGES_DIR)/.$(pkg)-$($(PKG)_VERSION)
 	$(SED) -i \
@@ -46,7 +46,7 @@ $(ESP32C3_TARGET): $(PACKAGES_DIR)/.$(pkg)-$($(PKG)_VERSION)
 		-e 's|@RETRY_SLEEP_AFTER_SCRIPT_S@|$(FREETZ_PACKAGE_ESP32C3_RETRY_SLEEP_AFTER_SCRIPT_S)|g' \
 		-e 's|@MQTT_LOG_INSERTS@|$(if $(FREETZ_PACKAGE_ESP32C3_MQTT_LOG_INSERTS),1,0)|g' \
 		$(ESP32C3_DEFAULTDIR)/ip-up
-	ln -sf rc.ppp_esp $@
+	chmod 755 $@
 
 $(pkg)-precompiled: $(ESP32C3_TARGET)
 
@@ -55,7 +55,6 @@ $(pkg)-uninstall:
 		$(ESP32C3_DEFAULTDIR)/esp32c3.config \
 		$(ESP32C3_DEFAULTDIR)/ip-up \
 		$(ESP32C3_DEFAULTDIR)/ip-down \
-		$(ESP32C3_INITDIR)/rc.ppp_esp \
 		$(ESP32C3_TARGET)
 
 $(PKG_FINISH)
