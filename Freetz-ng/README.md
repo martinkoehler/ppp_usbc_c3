@@ -14,70 +14,6 @@ The overlay adds:
 - the `mqtt-grafana` package, a read-only JSON CGI endpoint for querying that
   database from Grafana or another HTTP client.
 
-## Before building
-
-Start with a Freetz-ng checkout that supports the exact FRITZ!Box model and
-installed FRITZ!OS release. Complete an ordinary Freetz-ng build for that
-device first if possible; this separates general toolchain or firmware issues
-from problems introduced by this overlay.
-
-CDC ACM must be built by Freetz-ng for the selected router and kernel. Kernel
-modules are **not portable between arbitrary FRITZ!Box models or kernels**.
-Check the target router when diagnosing a module problem:
-
-```sh
-uname -m
-uname -r
-```
-
-This overlay deliberately does not contain a prebuilt `cdc-acm.ko` or a copy
-of Freetz-ng's generated `make/kernel` tree. The module is enabled with
-`make kernel-menuconfig`, built by Freetz-ng, and selected for installation
-through `make menuconfig`, as described below. This ensures that the module
-matches the selected target's architecture, kernel release, and ABI. A stale
-or mismatched module is normally reported as `Invalid module format` on the
-router.
-
-The target also needs USB host support for the port used by the ESP32-C3. On
-some FRITZ!Box models the USB port must be configured for host mode in the AVM
-web interface.
-
-### Current PPP filename check
-
-The current overlay contains the default file as
-`/etc/default.esp32/esp32c3.config`, while `rc.ppp_esp` currently looks for
-`/etc/default.esp32/ppp/esp32c3.conf`. These names must agree before the image
-is built. Either change `DEFAULTDIR` and `CFG` in
-`addon/esp32/root/etc/init.d/rc.ppp_esp`, or move/rename the default
-file to the location expected by that script. For example, the script can be
-changed to use:
-
-```sh
-DEFAULTDIR=/etc/default.esp32
-RUNTIMEDIR=/mod/etc/ppp
-CFG=$RUNTIMEDIR/esp32c3.config
-```
-
-The `ip-up` hook currently exports two comma-separated filters through the
-legacy singular variable `MQTT_TOPIC`. Because the collector treats that as
-one topic, change the hook to use the plural variable before building:
-
-```sh
-export MQTT_TOPICS="+/power/get,+/energycounter/get"
-```
-
-Review all site-specific values as well:
-
-- serial device and speed in `esp32c3.config` (default `/dev/ttyACM0`,
-  `115200`);
-- router-side and ESP32-side PPP addresses (currently
-  `192.168.178.83:192.168.178.250`);
-- route installed by `ip-up` (currently `192.168.4.0/24` through
-  `192.168.178.250`);
-- MQTT broker, port, topics, and optional database path in `ip-up`; and
-- the database path configured for `mqtt-grafana`, which must be the same as
-  `MQTT_DB_PATH` used by `mqtt_to_sqlite`.
-
 ## Copy the overlay into Freetz-ng
 
 Assume the repositories are next to each other:
@@ -118,6 +54,32 @@ git diff -- addon/static.pkg make/pkgs/mqtt2sqlite
 
 Re-copying the overlay after an update is supported, but it overwrites files
 with the same names. Preserve any local configuration changes first.
+
+### Configure the overlay files
+
+Before building, align the PPP init script with the supplied default filename.
+The overlay installs `/etc/default.esp32/esp32c3.config`, while `rc.ppp_esp`
+currently expects `/etc/default.esp32/ppp/esp32c3.conf`. Either move/rename the
+default file or change `addon/esp32/root/etc/init.d/rc.ppp_esp` to use:
+
+```sh
+DEFAULTDIR=/etc/default.esp32
+RUNTIMEDIR=/mod/etc/ppp
+CFG=$RUNTIMEDIR/esp32c3.config
+```
+
+The `ip-up` hook currently passes two comma-separated filters through the
+legacy singular `MQTT_TOPIC` variable. Change it to the plural variable so the
+collector creates two subscriptions:
+
+```sh
+export MQTT_TOPICS="+/power/get,+/energycounter/get"
+```
+
+Also review the serial device and speed, PPP addresses, ESP32 subnet route,
+MQTT broker/topics, and database path in the supplied files. The database path
+configured for `mqtt-grafana` must match `MQTT_DB_PATH` used by
+`mqtt_to_sqlite`.
 
 ## Configure the firmware
 
