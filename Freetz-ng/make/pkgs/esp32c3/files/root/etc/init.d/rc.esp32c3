@@ -16,6 +16,8 @@ LEGACY_CONFIG=/mod/etc/conf/esp32c3.conf
 PPP_OPTIONS=/var/run/esp32c3.ppp.options
 PPP_PIDFILE=/var/run/ppp-esp.pid
 COLLECTOR_PIDFILE=/var/run/mqtt_to_sqlite.pid
+COLLECTOR_WAITER_PIDFILE=/var/run/mqtt_to_sqlite-wait.pid
+STORAGE_POLL_SECONDS=2
 
 pid_running() {
   [ -s "$1" ] || return 1
@@ -118,20 +120,67 @@ stop_ppp() {
   rm -f "$PPP_PIDFILE"
 }
 
-start_collector() {
-  pid_running "$COLLECTOR_PIDFILE" && return 0
-  rm -f "$COLLECTOR_PIDFILE"
-
+export_collector_config() {
   export MQTT_BROKER MQTT_PORT MQTT_TOPICS MQTT_DB_PATH MQTT_CLIENT_ID
   export NETWORK_FIX_SCRIPT RECONNECT_MIN_S RECONNECT_MAX_S
   export RETRY_SLEEP_AFTER_SCRIPT_S MQTT_LOG_INSERTS
+}
 
+db_storage_mount() {
+  case "$MQTT_DB_PATH" in
+    /var/media/ftp/*/*)
+      DB_VOLUME="${MQTT_DB_PATH#/var/media/ftp/}"
+      DB_VOLUME="${DB_VOLUME%%/*}"
+      [ -n "$DB_VOLUME" ] || return 1
+      echo "/var/media/ftp/$DB_VOLUME"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+db_storage_ready() {
+  DB_MOUNT="$(db_storage_mount)" || return 0
+  while read -r DEVICE MOUNTPOINT REST; do
+    [ "$MOUNTPOINT" = "$DB_MOUNT" ] && return 0
+  done < /proc/mounts
+  return 1
+}
+
+start_collector_process() {
   echo "Starting mqtt_to_sqlite (broker $MQTT_BROKER:$MQTT_PORT)"
   "$COLLECTOR" &
   echo $! > "$COLLECTOR_PIDFILE"
 }
 
+wait_for_storage_and_start_collector() {
+  while ! db_storage_ready; do
+    sleep "$STORAGE_POLL_SECONDS"
+  done
+  rm -f "$COLLECTOR_WAITER_PIDFILE"
+  start_collector_process
+}
+
+start_collector() {
+  pid_running "$COLLECTOR_PIDFILE" && return 0
+  pid_running "$COLLECTOR_WAITER_PIDFILE" && return 0
+  rm -f "$COLLECTOR_PIDFILE" "$COLLECTOR_WAITER_PIDFILE"
+  export_collector_config
+
+  if db_storage_ready; then
+    start_collector_process
+  else
+    DB_MOUNT="$(db_storage_mount)"
+    echo "Waiting for SQLite storage mount $DB_MOUNT"
+    wait_for_storage_and_start_collector &
+    echo $! > "$COLLECTOR_WAITER_PIDFILE"
+  fi
+}
+
 stop_collector() {
+  if pid_running "$COLLECTOR_WAITER_PIDFILE"; then
+    kill "$(cat "$COLLECTOR_WAITER_PIDFILE")" 2>/dev/null
+  fi
+  rm -f "$COLLECTOR_WAITER_PIDFILE"
   if pid_running "$COLLECTOR_PIDFILE"; then
     kill "$(cat "$COLLECTOR_PIDFILE")" 2>/dev/null
   fi

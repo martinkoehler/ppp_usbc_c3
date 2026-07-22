@@ -18,7 +18,7 @@ config FREETZ_PACKAGE_MQTT_GRAFANA_TOPIC
 config FREETZ_PACKAGE_MQTT_GRAFANA_DB_PATH
 	string "SQLite database path" if !FREETZ_PACKAGE_ESP32C3
 	default FREETZ_PACKAGE_ESP32C3_MQTT_DB_PATH if FREETZ_PACKAGE_ESP32C3
-	default "/var/media/ftp/FLASH-1/mqtt_messages.db"
+	default "/var/media/ftp/MQTTDATA/mqtt_messages.db"
 	help
 	  Absolute path to the SQLite database created by mqtt_to_sqlite.
 

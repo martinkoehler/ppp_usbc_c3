@@ -242,11 +242,41 @@ writer and reader cannot be configured to use different paths accidentally.
 The database default is:
 
 ```text
-/var/media/ftp/FLASH-1/mqtt_messages.db
+/var/media/ftp/MQTTDATA/mqtt_messages.db
 ```
 
-Change it if the USB volume has a different mount name. The storage must be
-mounted and writable when the collector service starts.
+`MQTTDATA` is the recommended unique filesystem label for the dedicated
+SQLite volume. FRITZ!OS can append a numeric suffix to a generic or occupied
+mount name such as `FLASH-1`; a unique label avoids depending on USB discovery
+order. For the default ext2 filesystem, attach the safely removed device to a
+Linux PC, identify the partition carefully, unmount it, and set the label:
+
+```sh
+lsblk -f
+sudo umount /dev/sdX1
+sudo e2label /dev/sdX1 MQTTDATA
+sudo e2label /dev/sdX1
+```
+
+Replace `/dev/sdX1` with the partition reported for this specific device; it
+will not necessarily have the same `/dev/sd*` name as on the FRITZ!Box. After
+reconnecting it, confirm that `/proc/mounts` contains
+`/var/media/ftp/MQTTDATA`.
+
+The new path is a default, so an existing build `.config` or persistent
+`/mod/etc/conf/esp32c3.cfg` may still contain `FLASH-1`. Reset the ESP32-C3
+menu values as described in **Migrate an existing `.config`**, or change the
+runtime entry explicitly:
+
+```sh
+MQTT_DB_PATH='/var/media/ftp/MQTTDATA/mqtt_messages.db'
+```
+
+For database paths below `/var/media/ftp/<volume>/`, `rc.esp32c3` verifies the
+volume in `/proc/mounts`. If it is not ready, a non-blocking one-shot waiter
+checks every two seconds and starts `mqtt_to_sqlite` only after the mount
+appears. PPP startup is not delayed. This prevents SQLite files from being
+created accidentally in the FRITZ!Box's internal `/var/media/ftp` filesystem.
 
 The PPP endpoints default to `192.168.83.1` (FRITZ!Box) and `192.168.83.2`
 (ESP32-C3). This dedicated point-to-point network is separate from the normal
@@ -373,14 +403,16 @@ startup, `rc.mod` invokes `/etc/init.d/rc.esp32c3`, which:
 3. loads `cdc-acm`, `ppp_generic`, and `ppp_async`;
 4. creates the `/dev/ppp` character device (`108:0`) if the old target did not
    populate it automatically; and
-5. starts `mqtt_to_sqlite` independently of PPP; and
-6. starts pppd with persistent reconnect options.
+5. starts `mqtt_to_sqlite` independently of PPP, waiting in the background
+   for a configured USB volume when necessary; and
+6. starts pppd immediately with persistent reconnect options.
 
 When PPP comes up, `ip-up` installs the route to the ESP32 SoftAP subnet.
 `ip-down` deliberately leaves the collector running because OpenBeken may
 still publish through FRITZ!Box WLAN. `mqtt_to_sqlite` has its own MQTT
 reconnect loop, while pppd's `persist`, `maxfail 0`, and `holdoff` options
-handle PPP reconnects. There is no additional polling supervisor.
+handle PPP reconnects. The storage waiter exits after starting the collector;
+there is no additional process-failure or PPP polling supervisor.
 
 All values exposed by the `esp32c3` menuconfig submenu are first-boot defaults,
 not immutable firmware settings. Edit the persistent file on the router and
@@ -473,7 +505,7 @@ configuration. Topic precedence is repeated `-t`/`--topic`, then
 ```sh
 MQTT_BROKER=127.0.0.1 \
 MQTT_TOPICS='+/power/get,+/energycounter/get' \
-MQTT_DB_PATH=/var/media/ftp/FLASH-1/mqtt_messages.db \
+MQTT_DB_PATH=/var/media/ftp/MQTTDATA/mqtt_messages.db \
 /usr/bin/mqtt_to_sqlite
 ```
 
@@ -529,9 +561,9 @@ Do not expose it directly to the Internet.
   addresses with `/mod/etc/conf/esp32c3.cfg` and check the route installed by
   `ip-up`.
 - **No database:** use an absolute writable `MQTT_DB_PATH`, ensure
-  `/var/media/ftp/FLASH-1` (or the configured parent) is mounted, and inspect
-  collector output. Restart `rc.esp32c3` if the collector started before the
-  volume was mounted.
+  `/var/media/ftp/MQTTDATA` (or the configured volume) appears in
+  `/proc/mounts`, and inspect collector output. While storage is absent,
+  `/var/run/mqtt_to_sqlite-wait.pid` identifies the one-shot waiter.
 - **CGI returns 403:** the configured allowed IP does not equal the request's
   `REMOTE_ADDR`.
 - **CGI returns 503:** the database path in

@@ -9,6 +9,10 @@
   no `.cfg` file exists, preserving runtime changes across the upgrade.
 - Updated the PPP route hook, Grafana endpoint, packaged default,
   documentation, and package versions for the new filename.
+- Changed the default SQLite volume to the unique `MQTTDATA` label and made
+  collector startup wait asynchronously for configured `/var/media/ftp`
+  volumes, preventing databases from being created on internal flash before
+  USB automount completes.
 
 ## 2026-07-18 — Freetz-ng clean-build correction
 

@@ -67,10 +67,12 @@ config FREETZ_PACKAGE_ESP32C3_MQTT_TOPICS
 
 config FREETZ_PACKAGE_ESP32C3_MQTT_DB_PATH
 	string "SQLite database path"
-	default "/var/media/ftp/FLASH-1/mqtt_messages.db"
+	default "/var/media/ftp/MQTTDATA/mqtt_messages.db"
 	help
-	  Use an absolute path on persistent storage. mqtt-grafana uses this
-	  same value when it is selected through the esp32c3 package.
+	  Use an absolute path on persistent storage. For paths below
+	  /var/media/ftp/<volume>/, the service waits until that volume is
+	  mounted before starting mqtt_to_sqlite. mqtt-grafana uses this same
+	  value when it is selected through the esp32c3 package.
 
 config FREETZ_PACKAGE_ESP32C3_MQTT_CLIENT_ID
 	string "MQTT client ID"
