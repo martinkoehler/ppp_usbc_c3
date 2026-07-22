@@ -67,7 +67,7 @@ config FREETZ_PACKAGE_ESP32C3_MQTT_TOPICS
 
 config FREETZ_PACKAGE_ESP32C3_MQTT_DB_PATH
 	string "SQLite database path"
-	default "/var/media/ftp/MQTTDATA/mqtt_messages.db"
+	default "/var/media/ftp/FLASH/mqtt_messages.db"
 	help
 	  Use an absolute path on persistent storage. For paths below
 	  /var/media/ftp/<volume>/, the service waits until that volume is

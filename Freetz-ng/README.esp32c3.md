@@ -242,26 +242,25 @@ writer and reader cannot be configured to use different paths accidentally.
 The database default is:
 
 ```text
-/var/media/ftp/MQTTDATA/mqtt_messages.db
+/var/media/ftp/FLASH/mqtt_messages.db
 ```
 
-`MQTTDATA` is the recommended unique filesystem label for the dedicated
-SQLite volume. FRITZ!OS can append a numeric suffix to a generic or occupied
-mount name such as `FLASH-1`; a unique label avoids depending on USB discovery
-order. For the default ext2 filesystem, attach the safely removed device to a
-Linux PC, identify the partition carefully, unmount it, and set the label:
+`FLASH` is the filesystem label of the dedicated SQLite volume. FRITZ!OS uses
+the label as its preferred mount directory, but appends a numeric suffix when
+that name is already occupied. Before reconnecting the device, make sure stale
+unmounted directories such as `/var/media/ftp/FLASH` or `FLASH-1` do not
+contain data you still need, then remove those empty directories. The volume
+should subsequently mount as `/var/media/ftp/FLASH`.
+
+The existing ext2 label can be checked on the FRITZ!Box with:
 
 ```sh
-lsblk -f
-sudo umount /dev/sdX1
-sudo e2label /dev/sdX1 MQTTDATA
-sudo e2label /dev/sdX1
+blkid /dev/sda1
 ```
 
-Replace `/dev/sdX1` with the partition reported for this specific device; it
-will not necessarily have the same `/dev/sd*` name as on the FRITZ!Box. After
-reconnecting it, confirm that `/proc/mounts` contains
-`/var/media/ftp/MQTTDATA`.
+Reconfirm the device name from `/proc/mounts` before using it; USB device names
+can change. After reconnecting the volume, confirm that `/proc/mounts`
+contains `/var/media/ftp/FLASH`.
 
 The new path is a default, so an existing build `.config` or persistent
 `/mod/etc/conf/esp32c3.cfg` may still contain `FLASH-1`. Reset the ESP32-C3
@@ -269,7 +268,7 @@ menu values as described in **Migrate an existing `.config`**, or change the
 runtime entry explicitly:
 
 ```sh
-MQTT_DB_PATH='/var/media/ftp/MQTTDATA/mqtt_messages.db'
+MQTT_DB_PATH='/var/media/ftp/FLASH/mqtt_messages.db'
 ```
 
 For database paths below `/var/media/ftp/<volume>/`, `rc.esp32c3` verifies the
@@ -505,7 +504,7 @@ configuration. Topic precedence is repeated `-t`/`--topic`, then
 ```sh
 MQTT_BROKER=127.0.0.1 \
 MQTT_TOPICS='+/power/get,+/energycounter/get' \
-MQTT_DB_PATH=/var/media/ftp/MQTTDATA/mqtt_messages.db \
+MQTT_DB_PATH=/var/media/ftp/FLASH/mqtt_messages.db \
 /usr/bin/mqtt_to_sqlite
 ```
 
@@ -561,7 +560,7 @@ Do not expose it directly to the Internet.
   addresses with `/mod/etc/conf/esp32c3.cfg` and check the route installed by
   `ip-up`.
 - **No database:** use an absolute writable `MQTT_DB_PATH`, ensure
-  `/var/media/ftp/MQTTDATA` (or the configured volume) appears in
+  `/var/media/ftp/FLASH` (or the configured volume) appears in
   `/proc/mounts`, and inspect collector output. While storage is absent,
   `/var/run/mqtt_to_sqlite-wait.pid` identifies the one-shot waiter.
 - **CGI returns 403:** the configured allowed IP does not equal the request's

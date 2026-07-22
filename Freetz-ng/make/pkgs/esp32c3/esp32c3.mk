@@ -1,4 +1,4 @@
-$(call PKG_INIT_BIN, 1.1.2)
+$(call PKG_INIT_BIN, 1.1.3)
 
 $(PKG)_SOURCE :=
 $(PKG)_SITE   := none

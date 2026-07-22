@@ -10,7 +10,7 @@
 #include <time.h>
 
 #ifndef DEFAULT_DB_PATH
-#define DEFAULT_DB_PATH "/var/media/ftp/MQTTDATA/mqtt_messages.db"
+#define DEFAULT_DB_PATH "/var/media/ftp/FLASH/mqtt_messages.db"
 #endif
 #ifndef DEFAULT_MAX_ROWS
 #define DEFAULT_MAX_ROWS 20000
