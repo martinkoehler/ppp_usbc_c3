@@ -9,17 +9,19 @@ Installed URL:
 Power dashboard:
   http://fritz.box:81/mqtt-grafana.html
 
-The dashboard displays the current value of obk_wr/power/get and its history
-over the last 48 hours. It refreshes every five seconds. The page and endpoint
-are served from the same authenticated Freetz web server, so the browser reuses
-the port-81 authentication and no credentials are handled by JavaScript.
+The dashboard obtains its power topic from the endpoint's runtime configuration
+and displays its current value and history over the last 48 hours. It refreshes
+every five seconds. The page and endpoint are served from the same authenticated
+Freetz web server, so the browser reuses the port-81 authentication and no
+credentials are handled by JavaScript.
 
 Parameters:
   from=UNIX_SECONDS       default: now - 3600
   to=UNIX_SECONDS         default: now
   topic=MQTT_TOPIC        optional exact match
-  limit=ROWS              default: 2000, capped by menuconfig value
+  limit=ROWS              default: 2000, capped by runtime value
   mode=health             database health/latest timestamp response
+  mode=config             dashboard topic and maximum-row response
 
 Example:
   /cgi-bin/mqtt-grafana.cgi?topic=sensor/temp&from=1700000000&to=1700003600
@@ -32,4 +34,7 @@ Build notes:
 The CGI links libm after libsqlite3 because numeric MQTT payload handling uses
 floating-point classification functions such as isfinite(). SQLite headers
 come from the target staging directory populated by the declared sqlite
-dependency. Changing a menuconfig endpoint option triggers a package rebuild.
+dependency. When the esp32c3 integration is installed, the database path,
+exact dashboard topic, maximum rows, and allowed client address are read from
+the persistent /mod/etc/conf/esp32c3.conf on every request. The dashboard topic
+is deliberately separate from mqtt2sqlite's wildcard subscriptions.

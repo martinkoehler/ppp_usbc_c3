@@ -10,7 +10,7 @@
 #include <time.h>
 
 #ifndef DEFAULT_DB_PATH
-#define DEFAULT_DB_PATH "/var/media/ftp/Verbatim-STORENGO-01/mqtt_messages.db"
+#define DEFAULT_DB_PATH "/var/media/ftp/FLASH-1/mqtt_messages.db"
 #endif
 #ifndef DEFAULT_MAX_ROWS
 #define DEFAULT_MAX_ROWS 20000
@@ -18,10 +18,81 @@
 #ifndef DEFAULT_ALLOWED_IP
 #define DEFAULT_ALLOWED_IP ""
 #endif
+#ifndef DEFAULT_GRAFANA_TOPIC
+#define DEFAULT_GRAFANA_TOPIC "OBK-681/power/get"
+#endif
 
 #define DEFAULT_LIMIT 2000
 #define MAX_QUERY_VALUE 1024
 #define MAX_TOPIC_LEN 768
+#ifndef RUNTIME_CONFIG
+#define RUNTIME_CONFIG "/mod/etc/conf/esp32c3.conf"
+#endif
+
+static char runtime_db_path[512] = DEFAULT_DB_PATH;
+static char runtime_allowed_ip[128] = DEFAULT_ALLOWED_IP;
+static char runtime_grafana_topic[MAX_TOPIC_LEN + 1] = DEFAULT_GRAFANA_TOPIC;
+static long long runtime_max_rows = DEFAULT_MAX_ROWS;
+
+static char *trim(char *value)
+{
+    char *end;
+    while (isspace((unsigned char)*value)) ++value;
+    end = value + strlen(value);
+    while (end > value && isspace((unsigned char)end[-1])) --end;
+    *end = '\0';
+    return value;
+}
+
+static void copy_config_value(char *dst, size_t dst_size, char *value)
+{
+    size_t len;
+    value = trim(value);
+    len = strlen(value);
+    if (len >= 2 && ((value[0] == '\'' && value[len - 1] == '\'') ||
+                     (value[0] == '"' && value[len - 1] == '"'))) {
+        value[len - 1] = '\0';
+        ++value;
+    }
+    snprintf(dst, dst_size, "%s", value);
+}
+
+static void load_runtime_config(void)
+{
+    FILE *file = fopen(RUNTIME_CONFIG, "r");
+    char line[1024];
+    if (!file) return;
+
+    while (fgets(line, sizeof(line), file)) {
+        char *key = trim(line), *value, *equals;
+        char *end = NULL;
+        long long parsed;
+        if (!*key || *key == '#') continue;
+        equals = strchr(key, '=');
+        if (!equals) continue;
+        *equals = '\0';
+        value = equals + 1;
+        key = trim(key);
+
+        if (!strcmp(key, "MQTT_DB_PATH")) {
+            copy_config_value(runtime_db_path, sizeof(runtime_db_path), value);
+        } else if (!strcmp(key, "GRAFANA_TOPIC")) {
+            copy_config_value(runtime_grafana_topic, sizeof(runtime_grafana_topic), value);
+        } else if (!strcmp(key, "GRAFANA_ALLOWED_IP")) {
+            copy_config_value(runtime_allowed_ip, sizeof(runtime_allowed_ip), value);
+        } else if (!strcmp(key, "GRAFANA_MAX_ROWS")) {
+            char number[32];
+            copy_config_value(number, sizeof(number), value);
+            errno = 0;
+            parsed = strtoll(number, &end, 10);
+            if (!errno && end != number && *trim(end) == '\0' &&
+                parsed >= 1 && parsed <= 100000) {
+                runtime_max_rows = parsed;
+            }
+        }
+    }
+    fclose(file);
+}
 
 static void json_string(const unsigned char *value)
 {
@@ -60,6 +131,23 @@ static void error_response(int status, const char *text, const char *message)
     fputs("{\"error\":", stdout);
     json_string((const unsigned char *)message);
     fputs("}\n", stdout);
+}
+
+static int config_response(void)
+{
+    if (!runtime_grafana_topic[0]) {
+        error_response(503, "Service Unavailable", "No dashboard topic is configured");
+        return 1;
+    }
+    if (strchr(runtime_grafana_topic, '+') || strchr(runtime_grafana_topic, '#')) {
+        error_response(503, "Service Unavailable", "Dashboard topic must not contain MQTT wildcards");
+        return 1;
+    }
+    headers();
+    fputs("{\"topic\":", stdout);
+    json_string((const unsigned char *)runtime_grafana_topic);
+    printf(",\"max_rows\":%lld}\n", runtime_max_rows);
+    return 0;
 }
 
 static int hex_value(char c)
@@ -141,14 +229,14 @@ static int numeric_payload(const char *payload, double *number)
 static int client_allowed(void)
 {
     const char *remote;
-    if (!DEFAULT_ALLOWED_IP[0]) return 1;
+    if (!runtime_allowed_ip[0]) return 1;
     remote = getenv("REMOTE_ADDR");
-    return remote && !strcmp(remote, DEFAULT_ALLOWED_IP);
+    return remote && !strcmp(remote, runtime_allowed_ip);
 }
 
 static int open_database(sqlite3 **db)
 {
-    int rc = sqlite3_open_v2(DEFAULT_DB_PATH, db,
+    int rc = sqlite3_open_v2(runtime_db_path, db,
                              SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
     if (rc == SQLITE_OK) sqlite3_busy_timeout(*db, 2000);
     return rc;
@@ -191,8 +279,10 @@ int main(void)
     const char *sql_topic = "SELECT ts,topic,payload,qos,retain FROM messages WHERE ts>=?1 AND ts<=?2 AND topic=?3 ORDER BY ts ASC LIMIT ?4";
     const char *sql_all = "SELECT ts,topic,payload,qos,retain FROM messages WHERE ts>=?1 AND ts<=?2 ORDER BY ts ASC LIMIT ?3";
 
+    load_runtime_config();
     if (!client_allowed()) { error_response(403, "Forbidden", "Client address is not permitted"); return 1; }
     if (query_value(query, "mode", mode, sizeof(mode)) < 0) { error_response(400, "Bad Request", "Invalid mode"); return 1; }
+    if (!strcmp(mode, "config")) return config_response();
     if (!strcmp(mode, "health")) return health_response();
     if (query_value(query, "from", from_s, sizeof(from_s)) < 0 ||
         query_value(query, "to", to_s, sizeof(to_s)) < 0 ||
@@ -206,7 +296,7 @@ int main(void)
     to = parse_int(to_s, now, 0, LLONG_MAX / 1000, &ok);
     if (!ok) { error_response(400, "Bad Request", "Invalid to"); return 1; }
     from = normalize_epoch(from); to = normalize_epoch(to);
-    limit = parse_int(limit_s, DEFAULT_LIMIT, 1, DEFAULT_MAX_ROWS, &ok);
+    limit = parse_int(limit_s, DEFAULT_LIMIT, 1, runtime_max_rows, &ok);
     if (!ok) { error_response(400, "Bad Request", "Invalid limit"); return 1; }
     if (from > to) { error_response(400, "Bad Request", "from must be <= to"); return 1; }
 

@@ -1,10 +1,8 @@
 #!/bin/sh
 IF="$1"
-echo "PPP down on $IF, cleaning up..."
 
-if [ -f /var/run/mqtt_to_sqlite.pid ]; then
-  kill "$(cat /var/run/mqtt_to_sqlite.pid)" 2>/dev/null
-  rm -f /var/run/mqtt_to_sqlite.pid
-fi
+echo "ESP32-C3 PPP down on $IF"
+# mqtt_to_sqlite deliberately remains active: its broker is on the FRITZ!Box
+# and OpenBeken may still reach it through the FRITZ!Box WLAN.
 
 exit 0

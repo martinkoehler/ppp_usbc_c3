@@ -39,7 +39,7 @@ canvas{display:block;width:100%;height:100%}
 <body>
 <main>
   <header>
-    <div><h1>Power Monitor</h1><p class="subtitle">Live consumption from obk_wr/power/get</p></div>
+    <div><h1>Power Monitor</h1><p id="subtitle" class="subtitle">Loading configured topic</p></div>
     <div id="status" class="status"><span class="dot"></span><span id="statusText">Loading history</span></div>
   </header>
   <section class="grid">
@@ -58,11 +58,11 @@ canvas{display:block;width:100%;height:100%}
 </main>
 <script>
 "use strict";
-const TOPIC="obk_wr/power/get";
 const ENDPOINT="cgi-bin/mqtt-grafana.cgi";
 const WINDOW_MS=48*60*60*1000;
 const REFRESH_MS=5000;
-const LIMIT=20000;
+let topic="";
+let limit=20000;
 let samples=[];
 let busy=false;
 
@@ -70,7 +70,7 @@ const el={
   value:document.getElementById("value"),updated:document.getElementById("updated"),
   error:document.getElementById("error"),status:document.getElementById("status"),
   statusText:document.getElementById("statusText"),count:document.getElementById("count"),
-  canvas:document.getElementById("chart")
+  canvas:document.getElementById("chart"),subtitle:document.getElementById("subtitle")
 };
 
 function setStatus(kind,text){el.status.className="status "+kind;el.statusText.textContent=text}
@@ -93,10 +93,19 @@ function updateDisplay(){
   drawChart();
 }
 async function requestRows(fromMs,toMs){
-  const query=new URLSearchParams({topic:TOPIC,from:String(Math.floor(fromMs/1000)),to:String(Math.ceil(toMs/1000)),limit:String(LIMIT)});
+  const query=new URLSearchParams({topic,from:String(Math.floor(fromMs/1000)),to:String(Math.ceil(toMs/1000)),limit:String(limit)});
   const response=await fetch(ENDPOINT+"?"+query,{cache:"no-store",headers:{Accept:"application/json"}});
   if(!response.ok){let detail="";try{detail=(await response.json()).error||""}catch(_ignored){}throw new Error(detail||("HTTP "+response.status))}
   return validRows(await response.json());
+}
+async function loadConfiguration(){
+  const response=await fetch(ENDPOINT+"?mode=config",{cache:"no-store",headers:{Accept:"application/json"}});
+  if(!response.ok){let detail="";try{detail=(await response.json()).error||""}catch(_ignored){}throw new Error(detail||("HTTP "+response.status))}
+  const config=await response.json();
+  if(typeof config.topic!=="string"||!config.topic)throw new Error("No dashboard topic is configured");
+  topic=config.topic;
+  if(Number.isInteger(config.max_rows)&&config.max_rows>0)limit=config.max_rows;
+  el.subtitle.textContent="Live consumption from "+topic;
 }
 async function refresh(initial){
   if(busy)return;
@@ -154,8 +163,14 @@ function drawChart(){
   ctx.beginPath();for(let i=0;i<points.length;i++){const point=points[i];if(i)ctx.lineTo(x(point),y(point));else ctx.moveTo(x(point),y(point))}ctx.strokeStyle="#38bdf8";ctx.lineWidth=2;ctx.lineJoin="round";ctx.stroke();
 }
 addEventListener("resize",drawChart);
-refresh(true);
-setInterval(()=>refresh(false),REFRESH_MS);
+async function initialize(){
+  try{
+    await loadConfiguration();
+    await refresh(true);
+    setInterval(()=>refresh(false),REFRESH_MS);
+  }catch(error){el.error.textContent=error.message;setStatus("error","Configuration error")}
+}
+initialize();
 </script>
 </body>
 </html>

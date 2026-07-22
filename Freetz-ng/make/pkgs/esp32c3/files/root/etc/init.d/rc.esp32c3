@@ -1,6 +1,6 @@
 #!/bin/sh
 ### BEGIN INIT INFO
-# Provides:          ppp_esp
+# Provides:          esp32c3
 # Required-Start:    $network
 # Required-Stop:
 # Default-Start:     2 3 5
@@ -8,20 +8,30 @@
 ### END INIT INFO
 
 PPPD=/usr/sbin/pppd
+COLLECTOR=/usr/bin/mqtt_to_sqlite
 DEFAULTDIR=/etc/default.esp32
-RUNTIMEDIR=/mod/etc/ppp
-CFG=$RUNTIMEDIR/esp32c3.config
-PIDFILE=/var/run/ppp-esp.pid
+DEFAULT_CONFIG=$DEFAULTDIR/esp32c3.conf
+CONFIG=/mod/etc/conf/esp32c3.conf
+PPP_OPTIONS=/var/run/esp32c3.ppp.options
+PPP_PIDFILE=/var/run/ppp-esp.pid
+COLLECTOR_PIDFILE=/var/run/mqtt_to_sqlite.pid
+
+pid_running() {
+  [ -s "$1" ] || return 1
+  PID="$(cat "$1" 2>/dev/null)"
+  [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null
+}
 
 seed_files() {
-  mkdir -p /etc/ppp "$RUNTIMEDIR"
+  mkdir -p /mod/etc/conf /etc/ppp
 
-  # Preserve an existing runtime PPP configuration across firmware updates.
-  if [ ! -f "$CFG" ] && [ -f "$DEFAULTDIR/esp32c3.config" ]; then
-    cp "$DEFAULTDIR/esp32c3.config" "$CFG"
+  # Menuconfig supplies first-boot defaults. The persistent copy is entirely
+  # runtime-editable and is intentionally preserved across firmware updates.
+  if [ ! -f "$CONFIG" ] && [ -f "$DEFAULT_CONFIG" ]; then
+    cp "$DEFAULT_CONFIG" "$CONFIG" || return 1
+    chmod 644 "$CONFIG"
   fi
 
-  # PPP hooks are firmware-owned and updated when their defaults change.
   for f in ip-up ip-down; do
     if [ -f "$DEFAULTDIR/$f" ]; then
       if [ ! -f "/etc/ppp/$f" ] || ! cmp -s "$DEFAULTDIR/$f" "/etc/ppp/$f"; then
@@ -32,14 +42,19 @@ seed_files() {
   done
 }
 
+load_config() {
+  [ -r "$CONFIG" ] || {
+    echo "Cannot read $CONFIG"
+    return 1
+  }
+  . "$CONFIG"
+}
+
 prepare_devices() {
-  # These may already be built in or loaded; module-loading failures are
-  # diagnosed by pppd and the device checks below.
   modprobe cdc-acm 2>/dev/null
   modprobe ppp_generic 2>/dev/null
   modprobe ppp_async 2>/dev/null
 
-  # This old target does not populate the PPP character device automatically.
   if [ ! -e /dev/ppp ]; then
     mknod /dev/ppp c 108 0 || {
       echo "Unable to create /dev/ppp"
@@ -48,33 +63,90 @@ prepare_devices() {
     chmod 600 /dev/ppp
   fi
 
-  if [ ! -c /dev/ppp ]; then
+  [ -c /dev/ppp ] || {
     echo "/dev/ppp exists but is not a character device"
     return 1
+  }
+}
+
+write_ppp_options() {
+  cat > "$PPP_OPTIONS" <<EOF
+$SERIAL_DEVICE $SERIAL_BAUD
+local
+persist
+maxfail 0
+holdoff 5
+lcp-echo-interval 5
+lcp-echo-failure 3
+lock
+noauth
+nocrtscts
+novj
+nobsdcomp
+nopcomp
+noaccomp
+nodetach
+asyncmap 0xa0000
+escape 0x11,0x13,0x7d,0x7e
+ipcp-accept-local
+ipcp-accept-remote
+$PPP_LOCAL_IP:$PPP_REMOTE_IP
+ms-dns $PPP_DNS
+EOF
+  chmod 600 "$PPP_OPTIONS"
+}
+
+start_ppp() {
+  pid_running "$PPP_PIDFILE" && return 0
+  rm -f "$PPP_PIDFILE"
+  prepare_devices || return 1
+  write_ppp_options || return 1
+  echo "Starting ESP32-C3 PPP on $SERIAL_DEVICE"
+  "$PPPD" file "$PPP_OPTIONS" &
+  echo $! > "$PPP_PIDFILE"
+}
+
+stop_ppp() {
+  if pid_running "$PPP_PIDFILE"; then
+    kill "$(cat "$PPP_PIDFILE")" 2>/dev/null
   fi
+  rm -f "$PPP_PIDFILE"
+}
+
+start_collector() {
+  pid_running "$COLLECTOR_PIDFILE" && return 0
+  rm -f "$COLLECTOR_PIDFILE"
+
+  export MQTT_BROKER MQTT_PORT MQTT_TOPICS MQTT_DB_PATH MQTT_CLIENT_ID
+  export NETWORK_FIX_SCRIPT RECONNECT_MIN_S RECONNECT_MAX_S
+  export RETRY_SLEEP_AFTER_SCRIPT_S MQTT_LOG_INSERTS
+
+  echo "Starting mqtt_to_sqlite (broker $MQTT_BROKER:$MQTT_PORT)"
+  "$COLLECTOR" &
+  echo $! > "$COLLECTOR_PIDFILE"
+}
+
+stop_collector() {
+  if pid_running "$COLLECTOR_PIDFILE"; then
+    kill "$(cat "$COLLECTOR_PIDFILE")" 2>/dev/null
+  fi
+  rm -f "$COLLECTOR_PIDFILE"
 }
 
 start() {
-  echo "Starting PPP for ESP32-C3..."
-  seed_files
-  prepare_devices || return 1
+  echo "Starting ESP32-C3 integration"
+  seed_files || return 1
+  load_config || return 1
 
-  if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-    echo "pppd already running"
-    return 0
-  fi
-
-  # nodetach in the options file keeps this background PID attached to pppd.
-  "$PPPD" file "$CFG" &
-  echo $! > "$PIDFILE"
+  start_collector
+  start_ppp
 }
 
 stop() {
-  echo "Stopping PPP for ESP32-C3..."
-  if [ -f "$PIDFILE" ]; then
-    kill "$(cat "$PIDFILE")" 2>/dev/null
-    rm -f "$PIDFILE"
-  fi
+  echo "Stopping ESP32-C3 integration"
+  stop_ppp
+  stop_collector
+  rm -f "$PPP_OPTIONS"
 }
 
 restart() {
@@ -86,5 +158,5 @@ restart() {
 case "$1" in
   ""|load|start) start ;;
   stop|restart) "$1" ;;
-  *) echo "Usage: $0 {load|start|stop|restart}" ;;
+  *) echo "Usage: $0 {load|start|stop|restart}"; exit 1 ;;
 esac

@@ -32,7 +32,7 @@ static sqlite3 *g_db = NULL;
 static sqlite3_stmt *g_stmt_insert = NULL;
 static struct mosquitto *g_mosq = NULL;
 
-static char g_broker_host[128] = "192.168.178.250";
+static char g_broker_host[128] = "127.0.0.1";
 static int  g_broker_port = 1883;
 
 // Multiple topics
@@ -351,7 +351,7 @@ static void usage(const char *prog) {
 
 int main(int argc, char **argv) {
     // Env overrides for broker/db/script/backoff
-    snprintf(g_broker_host, sizeof(g_broker_host), "%s", env_or_default("MQTT_BROKER", "192.168.178.250"));
+    snprintf(g_broker_host, sizeof(g_broker_host), "%s", env_or_default("MQTT_BROKER", "127.0.0.1"));
     g_broker_port = env_or_default_int("MQTT_PORT", 1883);
     snprintf(g_db_path, sizeof(g_db_path), "%s", env_or_default("MQTT_DB_PATH", "./mqtt_messages.db"));
     snprintf(g_netfix_script, sizeof(g_netfix_script), "%s", env_or_default("NETWORK_FIX_SCRIPT", "./handle_network_error.sh"));
@@ -487,4 +487,3 @@ int main(int argc, char **argv) {
     free_topics();
     return 0;
 }
-

@@ -7,8 +7,9 @@ packages with `make menuconfig`, and build the firmware with `make`.
 
 The overlay adds:
 
-- the `esp32c3` integration package, which configures USB PPP, routing, and
-  automatic start/stop of the MQTT collector from one menuconfig submenu;
+- the `esp32c3` integration package, which configures persistent USB PPP,
+  routing, the FRITZ!Box MQTT collector, and persistent runtime settings from
+  one menuconfig submenu;
 - the `mqtt2sqlite` package, which subscribes to MQTT topics and stores the
   messages in SQLite; and
 - the `mqtt-grafana` package, a read-only JSON CGI endpoint for querying that
@@ -51,6 +52,23 @@ new overlay version should also be removed from an existing destination.
 Review the overlay repository's changes when updating and remove explicitly
 retired destination files by their exact paths.
 
+### Update an existing Docker build tree
+
+For an existing package-based installation under the documented
+`freetz-docker` layout, remove the two retired overlay files before copying the
+current overlay. Run these commands on the host from the mounted Git parent:
+
+```sh
+cd ~/freetz-docker/vol/git
+rm -f freetz-ng/make/pkgs/esp32c3/files/root/etc/init.d/rc.ppp_esp
+rm -f freetz-ng/make/pkgs/esp32c3/files/root/etc/default.esp32/esp32c3.config
+rsync -av ppp_usbc_c3/Freetz-ng/ freetz-ng/
+```
+
+Do not remove `freetz-ng/.config`; it contains the image selections. The
+package version bumps cause the changed packages to be staged and rebuilt.
+Do not use `rsync --delete`.
+
 When upgrading from the former static-addon version of this overlay, remove
 the retired addon after copying the new package. Also remove the old `esp32`
 line from `addon/static.pkg`. Inspect a top-level `rc.custom` first if it may
@@ -59,8 +77,11 @@ contain unrelated local configuration:
 ```sh
 rm -rf freetz-ng/addon/esp32
 sed -i '/^[[:space:]]*esp32[[:space:]]*$/d' freetz-ng/addon/static.pkg
-rm -f freetz-ng/rc.custom
 ```
+
+Remove a top-level `freetz-ng/rc.custom` only after inspecting it and only if
+it contains nothing except the retired ESP startup implementation. Preserve
+it when it contains unrelated local startup commands.
 
 Older overlay versions also installed this documentation as the destination
 tree's root `README.md`, overwriting Freetz-ng's own tracked document. If that
@@ -74,15 +95,13 @@ git restore README.md
 The overlay documentation is now copied as `README.esp32c3.md`, which does not
 collide with Freetz-ng's README.
 
-When updating from `esp32c3` package version 1.0.0, remove the renamed init
-script left in the destination source tree by non-deleting rsync:
+The Docker update sequence above removes `rc.ppp_esp`, the init-script name
+retired after package version 1.0.0, and `esp32c3.config`, the PPP options
+template retired by version 1.1.0. Safe overlay rsync cannot remove either
+file automatically.
 
-```sh
-rm -f freetz-ng/make/pkgs/esp32c3/files/root/etc/init.d/rc.ppp_esp
-```
-
-Package version 1.0.2 then creates a fresh staging directory and no longer
-generates `S80ppp_esp`.
+Current package versions create a fresh staging directory and no longer
+generate `S80ppp_esp`.
 
 The packaged PPP init script handles module loading, reconnects, routing, and
 the collector lifecycle. Do not install the former large `rc.custom` on the
@@ -149,11 +168,17 @@ The integration package automatically selects:
 Freetz-ng's current Mosquitto package has no library-only menu choice; it
 installs `libmosquitto` only when at least one client is selected. Therefore
 the integration includes `mosquitto_sub`, which is also useful for testing.
-The router-side broker is enabled by Freetz-ng's Mosquitto default but is not
-used by this integration. To leave it out of the image, open the Mosquitto
-submenu and clear **include broker server**; the selected client keeps the
-required library in the image. mqtt2sqlite connects to the broker embedded in
-the ESP32-C3.
+This setup uses the Mosquitto broker on the FRITZ!Box, so leave **include
+broker server** enabled in the Mosquitto submenu. It is enabled by the
+package's default configuration. `mqtt2sqlite` connects to that local broker
+at `127.0.0.1`; OpenBeken can publish to it through either the ESP32 access
+point/PPP route or the FRITZ!Box WLAN.
+
+Configure OpenBeken with the FRITZ!Box broker address that is reachable from
+both WLAN paths (normally the FRITZ!Box LAN address or `fritz.box`) and put the
+ESP access-point SSID ahead of the FRITZ!Box SSID in OpenBeken's own network
+configuration. The Freetz side supplies the broker and both routes; WLAN
+preference itself is a client-side setting.
 
 `pppd` selects the required PPP kernel-module symbols, including `ppp_generic`
 and `ppp_async`, when the target does not already provide them. The **ppp
@@ -170,17 +195,25 @@ Configure these values in the `esp32c3` submenu as needed:
 - network-repair command and per-insert logging; and
 - the persistent SQLite database path.
 
-When Grafana support is enabled, the same submenu also exposes its maximum
-rows and optional allowed-client address. mqtt-grafana receives the database
-path from the integration package, so the writer and reader cannot be
-configured to use different paths accidentally. The default is:
+When Grafana support is enabled, the same submenu also exposes its exact
+dashboard power topic, maximum rows, and optional allowed-client address.
+mqtt-grafana receives the database path from the integration package, so the
+writer and reader cannot be configured to use different paths accidentally.
+The database default is:
 
 ```text
-/var/media/ftp/Verbatim-STORENGO-01/mqtt_messages.db
+/var/media/ftp/FLASH-1/mqtt_messages.db
 ```
 
 Change it if the USB volume has a different mount name. The storage must be
-mounted and writable before the PPP link comes up.
+mounted and writable when the collector service starts.
+
+The PPP endpoints default to `192.168.83.1` (FRITZ!Box) and `192.168.83.2`
+(ESP32-C3). This dedicated point-to-point network is separate from the normal
+FRITZ!Box LAN and the ESP access point subnet, avoiding ambiguous routes.
+The collector subscriptions default to `+/power/get` and
+`+/energycounter/get`, retaining the top-level MQTT wildcard. The separate
+dashboard topic defaults to the exact topic `OBK-681/power/get`.
 
 Set **Level of user competence** to **Expert** if the **Kernel modules** menu
 is hidden; Freetz-ng exposes that menu only in Expert or Developer mode.
@@ -290,22 +323,66 @@ under `~/freetz-docker/vol/git/freetz-ng/images`.
 ## Runtime operation
 
 During the build, Freetz-ng compiles and installs the selected CDC ACM and PPP
-modules, while the `esp32c3` package installs its generated configuration and
+modules, while the `esp32c3` package installs its generated defaults and
 scripts. Freetz registers the selected package in `static.pkg`; during Freetz
 startup, `rc.mod` invokes `/etc/init.d/rc.esp32c3`, which:
 
-1. creates the runtime PPP directory;
-2. seeds the PPP options and installs the `ip-up`/`ip-down` hooks;
+1. seeds `/mod/etc/conf/esp32c3.conf` from menuconfig only when the writable
+   file does not exist;
+2. generates transient PPP options and installs the `ip-up`/`ip-down` hooks;
 3. loads `cdc-acm`, `ppp_generic`, and `ppp_async`;
 4. creates the `/dev/ppp` character device (`108:0`) if the old target did not
    populate it automatically; and
-5. starts `pppd` and records its process ID.
+5. starts `mqtt_to_sqlite` independently of PPP; and
+6. starts pppd with persistent reconnect options.
 
-When PPP comes up, `ip-up` installs the route to the ESP32 SoftAP subnet and
-starts `/usr/bin/mqtt_to_sqlite`. When PPP goes down, `ip-down` stops the
-collector. The PPP options use `persist`, unlimited reconnect attempts, and
-LCP echo checks, so a disconnected ESP32 can be recovered without rebooting
-the router.
+When PPP comes up, `ip-up` installs the route to the ESP32 SoftAP subnet.
+`ip-down` deliberately leaves the collector running because OpenBeken may
+still publish through FRITZ!Box WLAN. `mqtt_to_sqlite` has its own MQTT
+reconnect loop, while pppd's `persist`, `maxfail 0`, and `holdoff` options
+handle PPP reconnects. There is no additional polling supervisor.
+
+All values exposed by the `esp32c3` menuconfig submenu are first-boot defaults,
+not immutable firmware settings. Edit the persistent file on the router and
+restart the integration to apply them:
+
+```sh
+nvi /mod/etc/conf/esp32c3.conf
+/etc/init.d/rc.esp32c3 restart
+```
+
+`/mod` is Freetz's persistent writable storage. On every boot—including the
+first boot after installing a new firmware image—the init script tests for the
+file and copies the image defaults only if it is absent. It never overwrites an
+existing `/mod/etc/conf/esp32c3.conf`. To adopt every newly built menuconfig
+default, move or remove that file deliberately and restart the service; it
+will seed a fresh copy. The runtime dashboard topic, database, maximum-row,
+and allowed-IP values are read by `mqtt-grafana` for every CGI request.
+
+### Migrate an existing runtime configuration
+
+Preserving the runtime file also means that newly built menuconfig defaults do
+not replace older values or add a newly introduced variable. After upgrading
+from an overlay that pre-dates the separate dashboard topic, edit the existing
+file and ensure it contains these independent settings:
+
+```sh
+MQTT_TOPICS='+/power/get,+/energycounter/get'
+GRAFANA_TOPIC='OBK-681/power/get'
+```
+
+`MQTT_TOPICS` controls the collector and accepts MQTT wildcards.
+`GRAFANA_TOPIC` controls the dashboard's exact database query and must not
+contain `+` or `#`. Apply the edit and reload the page:
+
+```sh
+nvi /mod/etc/conf/esp32c3.conf
+/etc/init.d/rc.esp32c3 restart
+```
+
+Do not remove the runtime file merely to perform a normal firmware update.
+Remove it only when intentionally resetting every integration setting to the
+defaults embedded in the new image.
 
 Useful checks on the router are:
 
@@ -332,9 +409,9 @@ configuration. Topic precedence is repeated `-t`/`--topic`, then
 `MQTT_TOPICS`, then the legacy single `MQTT_TOPIC`, and finally `#`.
 
 ```sh
-MQTT_BROKER=192.168.178.250 \
+MQTT_BROKER=127.0.0.1 \
 MQTT_TOPICS='+/power/get,+/energycounter/get' \
-MQTT_DB_PATH=/var/media/ftp/Verbatim-STORENGO-01/mqtt_messages.db \
+MQTT_DB_PATH=/var/media/ftp/FLASH-1/mqtt_messages.db \
 /usr/bin/mqtt_to_sqlite
 ```
 
@@ -352,7 +429,17 @@ A data query accepts `from`, `to`, `topic`, and `limit`. Timestamps may be Unix
 seconds or milliseconds; response timestamps are milliseconds for Grafana:
 
 ```text
-http://fritz.box:81/cgi-bin/mqtt-grafana.cgi?topic=obk_wr%2Fpower%2Fget&from=1700000000&to=1700003600&limit=2000
+http://fritz.box:81/cgi-bin/mqtt-grafana.cgi?topic=OBK-681%2Fpower%2Fget&from=1700000000&to=1700003600&limit=2000
+```
+
+The dashboard does not contain a hard-coded device topic. On page load it
+requests `mode=config` from the same CGI and uses the exact `GRAFANA_TOPIC`
+from `/mod/etc/conf/esp32c3.conf`. The endpoint also returns the runtime
+maximum-row setting. Consequently, a `GRAFANA_TOPIC` edit is reflected after
+the page is reloaded, independently of the wildcard collector subscriptions:
+
+```text
+http://fritz.box:81/cgi-bin/mqtt-grafana.cgi?mode=config
 ```
 
 The endpoint opens SQLite read-only, relies on the Freetz port-81
@@ -372,14 +459,19 @@ Do not expose it directly to the Internet.
   Modules** in `make menuconfig`; both steps are required.
 - **`Invalid module format`:** remove any stale manually copied module and
   rebuild it through Freetz-ng for the selected target kernel.
-- **New PPP menu settings have no effect:** the init script preserves an
-  existing `/mod/etc/ppp/esp32c3.config`. Remove that runtime copy and restart
-  `rc.esp32c3` to seed the newly built defaults.
+- **New menuconfig settings have no effect:** menuconfig provides first-boot
+  defaults. Compare or replace `/mod/etc/conf/esp32c3.conf`, then restart
+  `rc.esp32c3`. This preservation is intentional so runtime edits survive a
+  firmware update.
 - **PPP starts but the ESP32 subnet is unreachable:** compare the negotiated
-  addresses with `esp32c3.config` and check the route installed by `ip-up`.
-- **No database:** use an absolute writable `MQTT_DB_PATH`, ensure its parent
-  storage is mounted before PPP comes up, and inspect collector output.
+  addresses with `/mod/etc/conf/esp32c3.conf` and check the route installed by
+  `ip-up`.
+- **No database:** use an absolute writable `MQTT_DB_PATH`, ensure
+  `/var/media/ftp/FLASH-1` (or the configured parent) is mounted, and inspect
+  collector output. Restart `rc.esp32c3` if the collector started before the
+  volume was mounted.
 - **CGI returns 403:** the configured allowed IP does not equal the request's
   `REMOTE_ADDR`.
-- **CGI returns 503:** its compiled-in database path is missing, unreadable, or
-  different from the collector's path. Change menuconfig and rebuild.
+- **CGI returns 503:** the database path in
+  `/mod/etc/conf/esp32c3.conf` is missing or unreadable. Correct it and retry;
+  rebuilding is not necessary.
