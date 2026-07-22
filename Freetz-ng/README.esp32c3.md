@@ -367,7 +367,7 @@ modules, while the `esp32c3` package installs its generated defaults and
 scripts. Freetz registers the selected package in `static.pkg`; during Freetz
 startup, `rc.mod` invokes `/etc/init.d/rc.esp32c3`, which:
 
-1. seeds `/mod/etc/conf/esp32c3.conf` from menuconfig only when the writable
+1. seeds `/mod/etc/conf/esp32c3.cfg` from menuconfig only when the writable
    file does not exist;
 2. generates transient PPP options and installs the `ip-up`/`ip-down` hooks;
 3. loads `cdc-acm`, `ppp_generic`, and `ppp_async`;
@@ -387,17 +387,24 @@ not immutable firmware settings. Edit the persistent file on the router and
 restart the integration to apply them:
 
 ```sh
-nvi /mod/etc/conf/esp32c3.conf
+nvi /mod/etc/conf/esp32c3.cfg
 /etc/init.d/rc.esp32c3 restart
 ```
 
 `/mod` is Freetz's persistent writable storage. On every boot—including the
 first boot after installing a new firmware image—the init script tests for the
 file and copies the image defaults only if it is absent. It never overwrites an
-existing `/mod/etc/conf/esp32c3.conf`. To adopt every newly built menuconfig
+existing `/mod/etc/conf/esp32c3.cfg`. To adopt every newly built menuconfig
 default, move or remove that file deliberately and restart the service; it
 will seed a fresh copy. The runtime dashboard topic, database, maximum-row,
 and allowed-IP values are read by `mqtt-grafana` for every CGI request.
+
+Package version 1.1.1 uses the `.cfg` suffix so the Freetz configuration
+editor accepts the file. During the first service start after upgrading, if
+`esp32c3.cfg` does not exist but the former `esp32c3.conf` does, the init
+script renames the old file to `esp32c3.cfg` before loading it. Existing
+runtime values are therefore preserved. If both names exist, the `.cfg` file
+takes precedence and the legacy file is left untouched for manual review.
 
 ### Migrate an existing runtime configuration
 
@@ -416,7 +423,7 @@ GRAFANA_TOPIC='OBK-681/power/get'
 contain `+` or `#`. Apply the edit and reload the page:
 
 ```sh
-nvi /mod/etc/conf/esp32c3.conf
+nvi /mod/etc/conf/esp32c3.cfg
 /etc/init.d/rc.esp32c3 restart
 ```
 
@@ -426,12 +433,12 @@ and start the service again:
 
 ```sh
 /etc/init.d/rc.esp32c3 stop
-mv /mod/etc/conf/esp32c3.conf /mod/etc/conf/esp32c3.conf.before-new-defaults
+mv /mod/etc/conf/esp32c3.cfg /mod/etc/conf/esp32c3.cfg.before-new-defaults
 /etc/init.d/rc.esp32c3 start
 ```
 
 On start, `rc.esp32c3` seeds a complete new
-`/mod/etc/conf/esp32c3.conf` from `/etc/default.esp32/esp32c3.conf`. Perform
+`/mod/etc/conf/esp32c3.cfg` from `/etc/default.esp32/esp32c3.cfg`. Perform
 this only after the new firmware has booted, and keep the backup until any
 intentional local customizations have been copied into the new file.
 
@@ -489,7 +496,7 @@ http://fritz.box:81/cgi-bin/mqtt-grafana.cgi?topic=OBK-681%2Fpower%2Fget&from=17
 
 The dashboard does not contain a hard-coded device topic. On page load it
 requests `mode=config` from the same CGI and uses the exact `GRAFANA_TOPIC`
-from `/mod/etc/conf/esp32c3.conf`. The endpoint also returns the runtime
+from `/mod/etc/conf/esp32c3.cfg`. The endpoint also returns the runtime
 maximum-row setting. Consequently, a `GRAFANA_TOPIC` edit is reflected after
 the page is reloaded, independently of the wildcard collector subscriptions:
 
@@ -515,11 +522,11 @@ Do not expose it directly to the Internet.
 - **`Invalid module format`:** remove any stale manually copied module and
   rebuild it through Freetz-ng for the selected target kernel.
 - **New menuconfig settings have no effect:** menuconfig provides first-boot
-  defaults. Compare or replace `/mod/etc/conf/esp32c3.conf`, then restart
+  defaults. Compare or replace `/mod/etc/conf/esp32c3.cfg`, then restart
   `rc.esp32c3`. This preservation is intentional so runtime edits survive a
   firmware update.
 - **PPP starts but the ESP32 subnet is unreachable:** compare the negotiated
-  addresses with `/mod/etc/conf/esp32c3.conf` and check the route installed by
+  addresses with `/mod/etc/conf/esp32c3.cfg` and check the route installed by
   `ip-up`.
 - **No database:** use an absolute writable `MQTT_DB_PATH`, ensure
   `/var/media/ftp/FLASH-1` (or the configured parent) is mounted, and inspect
@@ -528,5 +535,5 @@ Do not expose it directly to the Internet.
 - **CGI returns 403:** the configured allowed IP does not equal the request's
   `REMOTE_ADDR`.
 - **CGI returns 503:** the database path in
-  `/mod/etc/conf/esp32c3.conf` is missing or unreadable. Correct it and retry;
+  `/mod/etc/conf/esp32c3.cfg` is missing or unreadable. Correct it and retry;
   rebuilding is not necessary.

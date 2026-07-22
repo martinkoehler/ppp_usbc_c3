@@ -36,5 +36,5 @@ floating-point classification functions such as isfinite(). SQLite headers
 come from the target staging directory populated by the declared sqlite
 dependency. When the esp32c3 integration is installed, the database path,
 exact dashboard topic, maximum rows, and allowed client address are read from
-the persistent /mod/etc/conf/esp32c3.conf on every request. The dashboard topic
+the persistent /mod/etc/conf/esp32c3.cfg on every request. The dashboard topic
 is deliberately separate from mqtt2sqlite's wildcard subscriptions.

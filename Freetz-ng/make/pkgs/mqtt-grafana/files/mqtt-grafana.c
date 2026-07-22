@@ -26,7 +26,7 @@
 #define MAX_QUERY_VALUE 1024
 #define MAX_TOPIC_LEN 768
 #ifndef RUNTIME_CONFIG
-#define RUNTIME_CONFIG "/mod/etc/conf/esp32c3.conf"
+#define RUNTIME_CONFIG "/mod/etc/conf/esp32c3.cfg"
 #endif
 
 static char runtime_db_path[512] = DEFAULT_DB_PATH;

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Arguments: interface tty speed localIP remoteIP ipparam
 IF="$1"
-CONFIG=/mod/etc/conf/esp32c3.conf
+CONFIG=/mod/etc/conf/esp32c3.cfg
 
 [ -r "$CONFIG" ] && . "$CONFIG"
 

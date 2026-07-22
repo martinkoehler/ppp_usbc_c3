@@ -10,8 +10,9 @@
 PPPD=/usr/sbin/pppd
 COLLECTOR=/usr/bin/mqtt_to_sqlite
 DEFAULTDIR=/etc/default.esp32
-DEFAULT_CONFIG=$DEFAULTDIR/esp32c3.conf
-CONFIG=/mod/etc/conf/esp32c3.conf
+DEFAULT_CONFIG=$DEFAULTDIR/esp32c3.cfg
+CONFIG=/mod/etc/conf/esp32c3.cfg
+LEGACY_CONFIG=/mod/etc/conf/esp32c3.conf
 PPP_OPTIONS=/var/run/esp32c3.ppp.options
 PPP_PIDFILE=/var/run/ppp-esp.pid
 COLLECTOR_PIDFILE=/var/run/mqtt_to_sqlite.pid
@@ -27,6 +28,10 @@ seed_files() {
 
   # Menuconfig supplies first-boot defaults. The persistent copy is entirely
   # runtime-editable and is intentionally preserved across firmware updates.
+  if [ ! -f "$CONFIG" ] && [ -f "$LEGACY_CONFIG" ]; then
+    echo "Migrating $LEGACY_CONFIG to $CONFIG"
+    mv "$LEGACY_CONFIG" "$CONFIG" || return 1
+  fi
   if [ ! -f "$CONFIG" ] && [ -f "$DEFAULT_CONFIG" ]; then
     cp "$DEFAULT_CONFIG" "$CONFIG" || return 1
     chmod 644 "$CONFIG"

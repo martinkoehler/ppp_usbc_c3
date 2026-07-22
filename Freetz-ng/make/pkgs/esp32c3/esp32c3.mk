@@ -1,4 +1,4 @@
-$(call PKG_INIT_BIN, 1.1.0)
+$(call PKG_INIT_BIN, 1.1.1)
 
 $(PKG)_SOURCE :=
 $(PKG)_SITE   := none
@@ -48,14 +48,14 @@ $(ESP32C3_TARGET): $(PACKAGES_DIR)/.$(pkg)-$($(PKG)_VERSION)
 		-e 's|@GRAFANA_TOPIC@|$(call qstrip,$(FREETZ_PACKAGE_ESP32C3_GRAFANA_TOPIC))|g' \
 		-e 's|@GRAFANA_MAX_ROWS@|$(FREETZ_PACKAGE_ESP32C3_GRAFANA_MAX_ROWS)|g' \
 		-e 's|@GRAFANA_ALLOWED_IP@|$(call qstrip,$(FREETZ_PACKAGE_ESP32C3_GRAFANA_ALLOWED_IP))|g' \
-		$(ESP32C3_DEFAULTDIR)/esp32c3.conf
+		$(ESP32C3_DEFAULTDIR)/esp32c3.cfg
 	chmod 755 $@
 
 $(pkg)-precompiled: $(ESP32C3_TARGET)
 
 $(pkg)-uninstall:
 	$(RM) \
-		$(ESP32C3_DEFAULTDIR)/esp32c3.conf \
+		$(ESP32C3_DEFAULTDIR)/esp32c3.cfg \
 		$(ESP32C3_DEFAULTDIR)/ip-up \
 		$(ESP32C3_DEFAULTDIR)/ip-down \
 		$(ESP32C3_TARGET)

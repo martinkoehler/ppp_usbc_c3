@@ -1,5 +1,15 @@
 # Change Log
 
+## 2026-07-22 — Freetz runtime configuration suffix
+
+- Renamed the persistent ESP32-C3 integration configuration to
+  `/mod/etc/conf/esp32c3.cfg` so it can be edited by the Freetz configuration
+  editor.
+- Added automatic one-time migration from the former `esp32c3.conf` name when
+  no `.cfg` file exists, preserving runtime changes across the upgrade.
+- Updated the PPP route hook, Grafana endpoint, packaged default,
+  documentation, and package versions for the new filename.
+
 ## 2026-07-18 — Freetz-ng clean-build correction
 
 - Corrected the `mqtt-grafana` recipe to use SQLite headers from the target
