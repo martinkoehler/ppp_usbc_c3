@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS
         "client_rssi.c"
-        "mqtt_broker.c"
+        "mqtt_telemetry.c"
         "oled.c"
         "ppp.c"
         "ppp_usb_main.c"

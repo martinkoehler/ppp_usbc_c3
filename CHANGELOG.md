@@ -1,5 +1,20 @@
 # Change Log
 
+## 2026-07-22 — FRITZ!Box MQTT display source
+
+- Removed the embedded Mosquitto broker and its managed dependencies; the
+  ESP32 now uses only an MQTT client connected to the FRITZ!Box broker on port
+  1883.
+- Added persistent web configuration for the broker IPv4 address and the
+  Grafana/root topic, defaulting to `192.168.178.1` and `OBK-681`.
+- Derived the power and presence subscriptions from the configured root as
+  `<root>/power/get` and `<root>/connected`.
+- Updated the OLED connection marker to show `+` for `online`, `-` for
+  `offline`, and `X` when the broker is unreachable. Stale power data now
+  becomes unavailable after 30 seconds.
+- Added a persistent web switch for OLED power-save mode and exposed the new
+  MQTT/display state in the status endpoint.
+
 ## 2026-07-18 — Freetz-ng clean-build correction
 
 - Corrected the `mqtt-grafana` recipe to use SQLite headers from the target

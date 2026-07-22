@@ -11,6 +11,7 @@
  */
 #pragma once
 
+#include <stdbool.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -29,6 +30,10 @@ extern "C" {
 
 esp_err_t oled_start(void);
 void oled_blank_and_reset_screensaver(void);
+/** Persistently enable or power-save the OLED. */
+esp_err_t oled_set_enabled(bool enabled);
+/** Return the persistent OLED enabled setting. */
+bool oled_is_enabled(void);
 
 /** Request the same debug-page toggle as a BOOT-button press. */
 void oled_request_debug_toggle(void);

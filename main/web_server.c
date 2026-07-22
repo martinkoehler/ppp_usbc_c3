@@ -9,7 +9,7 @@
  */
 #include "web_server.h"
 #include "ap_config.h"
-#include "mqtt_broker.h"
+#include "mqtt_telemetry.h"
 #include "oled.h"
 #include "ppp.h"
 
@@ -210,6 +210,14 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     ap_get_config_snapshot(ssid, sizeof(ssid), NULL, 0, &channel_status);
     char escaped_ssid[256];
     html_escape(ssid, escaped_ssid, sizeof(escaped_ssid));
+    mqtt_telemetry_config_t mqtt_config;
+    mqtt_telemetry_get_config(&mqtt_config);
+    char escaped_mqtt_host[64];
+    char escaped_mqtt_root[192];
+    html_escape(mqtt_config.broker_host, escaped_mqtt_host,
+                sizeof(escaped_mqtt_host));
+    html_escape(mqtt_config.root_topic, escaped_mqtt_root,
+                sizeof(escaped_mqtt_root));
 
     snprintf(page, page_len,
         "<!doctype html><html><head>"
@@ -248,17 +256,20 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "if(otaInProgress){return Promise.resolve();}"
         "return fetch('/status/all').then(function(resp){return resp.json();}).then(function(data){"
         "if(!data){return;}"
-        "setHtml('mqttStatus',data.mqtt.running?'<span style=\"color:green;\">RUNNING</span>':'<span style=\"color:red;\">STOPPED</span>');"
+        "setHtml('mqttStatus',data.mqtt.connected?'<span style=\"color:green;\">CONNECTED</span>':'<span style=\"color:red;\">UNREACHABLE</span>');"
         "setText('mqttPort',data.mqtt.port);"
+        "setText('mqttHost',data.mqtt.host||'');"
+        "setText('mqttPowerTopic',data.mqtt.power_topic||'');"
+        "setText('mqttConnectedTopic',data.mqtt.connected_topic||'');"
         "setText('freeHeap',data.mqtt.free_heap);"
         "setText('obkPower',data.mqtt.obk_power||'');"
         "var conn='';"
-        "if(data.mqtt.obk_connected===true){conn='<span style=\"color:green;\">OBK ONLINE</span>';"
+        "if(!data.mqtt.connected){conn='<span style=\"color:red;\">BROKER UNREACHABLE</span>';"
+        "}else if(data.mqtt.obk_connected===true){conn='<span style=\"color:green;\">OBK ONLINE</span>';"
         "}else if(data.mqtt.obk_connected===false){conn='<span style=\"color:red;\">OBK OFFLINE</span>';"
         "}else{conn='<span style=\"color:gray;\">UNKNOWN</span>';}"
         "setHtml('obkConn',conn);"
-        "setText('mqttApUri',data.mqtt.ap_uri||'');"
-        "setText('mqttPppUri',data.mqtt.ppp_up?data.mqtt.ppp_uri:'PPP not up yet.');"
+        "setText('displayState',data.display_enabled?'ON':'OFF');"
         "setText('apChannel',data.ap.channel||'');"
         "setText('channelMode',data.ap.channel_auto?'Automatic':'Manual');"
         "var scan=data.ap.scan_in_progress?'Scanning...':data.ap.last_scan;"
@@ -316,23 +327,33 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<h3>OLED Diagnostics</h3>"
         "<form method='POST' action='/oled/debug'><button type='submit'>Toggle Debug Page</button></form>"
         "<p><small>Use this control to test the display without pressing the GPIO9 BOOT button.</small></p><hr>"
+        "<h3>MQTT Display Source</h3>"
+        "<form method='POST' action='/mqtt/display'>"
+        "FRITZ!Box MQTT broker IPv4:<br><input name='broker_host' maxlength='15' value='%s' required><br>"
+        "<small>Port 1883 is used.</small><br>"
+        "Grafana root topic:<br><input name='root_topic' maxlength='63' value='%s' required><br>"
+        "<small>For example OBK-681; /power/get and /connected are appended automatically.</small><br>"
+        "<label><input type='checkbox' name='display_enabled' value='1'%s> OLED enabled</label><br><br>"
+        "<button type='submit'>Save MQTT & Display Settings</button></form><hr>"
         "<h3>OTA Firmware Update</h3>"
         "<p>Select a firmware <code>.bin</code> file built for this device. The device will reboot after upload.</p>"
         "<input type='file' id='otaFile' accept='.bin'><br>"
         "<button type='button' id='otaBtn' onclick='startOtaUpload()'>Upload & Update</button>"
         "<span id='otaBadge' style='display:none;margin-left:8px;padding:2px 6px;border-radius:10px;background:#f0ad4e;color:#222;font-size:12px;'>BUSY</span>"
         "<div id='otaStatus' style='margin-top:8px;color:#444;'></div><hr>"
-        "<h3>MQTT Broker</h3>"
-        "<p><b>Status:</b> <span id='mqttStatus'></span><br>"
-        "<b>Port:</b> <span id='mqttPort'></span><br>"
+        "<h3>MQTT Telemetry</h3>"
+        "<p><b>Broker status:</b> <span id='mqttStatus'></span><br>"
+        "<b>Broker:</b> <code id='mqttHost'></code>:<span id='mqttPort'></span><br>"
+        "<b>Power topic:</b> <code id='mqttPowerTopic'></code><br>"
+        "<b>Connection topic:</b> <code id='mqttConnectedTopic'></code><br>"
+        "<b>OLED:</b> <span id='displayState'></span><br>"
         "<b>Free heap:</b> <span id='freeHeap'></span> bytes</p>"
-        "<p><b>Latest " OBK_POWER_TOPIC ":</b> <code id='obkPower'></code></p>"
+        "<p><b>Latest power:</b> <code id='obkPower'></code></p>"
         "<p><b>OBK connected:</b> <span id='obkConn'></span></p>"
         "<p><b>Current AP channel:</b> <span id='apChannel'>%u</span></p>"
         "<p><b>Channel selection:</b> <span id='channelMode'>%s</span><br>"
         "<b>Last automatic scan:</b> <span id='channelScan'>%s</span></p>"
-        "<p><b>Connect from WiFi AP clients:</b><br><code id='mqttApUri'></code></p>"
-        "<p><b>Connect from Linux PC over PPP:</b><br><code id='mqttPppUri'></code></p><hr>"
+        "<hr>"
         "<h3>Connected Clients</h3>"
         "<table><thead><tr><th>#</th><th>MAC</th><th>IP (DHCP)</th></tr></thead>"
         "<tbody id='clientTableBody'><tr><td colspan='3'>Loading...</td></tr></tbody></table><hr>",
@@ -341,6 +362,9 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         escaped_ssid,
         channel_status.channel_auto ? " checked" : "",
         channel_status.manual_channel,
+        escaped_mqtt_host,
+        escaped_mqtt_root,
+        oled_is_enabled() ? " checked" : "",
         channel_status.active_channel,
         channel_status.channel_auto ? "Automatic" : "Manual",
         channel_status.last_scan_time_us == 0 ? "Never" :
@@ -371,10 +395,10 @@ static esp_err_t status_all_get_handler(httpd_req_t *req)
 
     char obk_power_raw[64];
     char obk_power[128];
-    mqtt_broker_get_obk_power(obk_power_raw, sizeof(obk_power_raw));
+    mqtt_telemetry_get_power(obk_power_raw, sizeof(obk_power_raw));
     json_escape(obk_power_raw, obk_power, sizeof(obk_power));
 
-    int conn_state = mqtt_broker_get_obk_connected_state();
+    int conn_state = mqtt_telemetry_get_obk_connected_state();
     const char *conn_bool = "null";
     if (conn_state > 0) {
         conn_bool = "true";
@@ -382,11 +406,15 @@ static esp_err_t status_all_get_handler(httpd_req_t *req)
         conn_bool = "false";
     }
 
-    char mqtt_ap_uri[64];
-    snprintf(mqtt_ap_uri, sizeof(mqtt_ap_uri), "mqtt://%s:%d", AP_IP_ADDR, MQTT_BROKER_PORT);
+    mqtt_telemetry_config_t mqtt_config;
+    mqtt_telemetry_get_config(&mqtt_config);
+    char mqtt_power_topic[MQTT_ROOT_TOPIC_MAX_LEN + 16];
+    char mqtt_connected_topic[MQTT_ROOT_TOPIC_MAX_LEN + 16];
+    snprintf(mqtt_power_topic, sizeof(mqtt_power_topic), "%s/power/get",
+             mqtt_config.root_topic);
+    snprintf(mqtt_connected_topic, sizeof(mqtt_connected_topic), "%s/connected",
+             mqtt_config.root_topic);
 
-    char mqtt_ppp_uri[64];
-    bool ppp_up = (ppp_ip.addr != 0);
     ap_channel_status_t channel_status;
     ap_get_config_snapshot(NULL, 0, NULL, 0, &channel_status);
     int64_t scan_age_sec = channel_status.last_scan_time_us > 0
@@ -399,27 +427,22 @@ static esp_err_t status_all_get_handler(httpd_req_t *req)
         snprintf(scan_age_json, sizeof(scan_age_json), "%lld",
                  (long long)scan_age_sec);
     }
-    if (ppp_ip.addr != 0) {
-        snprintf(mqtt_ppp_uri, sizeof(mqtt_ppp_uri), "mqtt://%s:%d",
-                 ip4addr_ntoa(&ppp_ip), MQTT_BROKER_PORT);
-    } else {
-        mqtt_ppp_uri[0] = 0;
-    }
-
     snprintf(page, page_len,
              "{"
-             "\"schema_version\":2,"
+             "\"schema_version\":3,"
              "\"mqtt\":{"
-             "\"running\":%s,"
+             "\"connected\":%s,"
+             "\"host\":\"%s\","
              "\"port\":%d,"
+             "\"root_topic\":\"%s\","
+             "\"power_topic\":\"%s\","
+             "\"connected_topic\":\"%s\","
              "\"free_heap\":%lu,"
              "\"obk_power\":\"%s\","
              "\"obk_connected\":%s,"
-             "\"obk_connected_state\":%d,"
-             "\"ap_uri\":\"%s\","
-             "\"ppp_uri\":\"%s\","
-             "\"ppp_up\":%s"
+             "\"obk_connected_state\":%d"
              "},"
+             "\"display_enabled\":%s,"
              "\"ap\":{"
              "\"channel\":%u,"
              "\"channel_auto\":%s,"
@@ -434,15 +457,17 @@ static esp_err_t status_all_get_handler(httpd_req_t *req)
              "\"nm\":\"" IPSTR "\""
              "},"
              "\"clients\":[",
-             mqtt_broker_is_running() ? "true" : "false",
-             MQTT_BROKER_PORT,
+             mqtt_telemetry_is_broker_connected() ? "true" : "false",
+             mqtt_config.broker_host,
+             MQTT_TELEMETRY_PORT,
+             mqtt_config.root_topic,
+             mqtt_power_topic,
+             mqtt_connected_topic,
              (unsigned long)esp_get_free_heap_size(),
              obk_power,
              conn_bool,
              conn_state,
-             mqtt_ap_uri,
-             mqtt_ppp_uri,
-             ppp_up ? "true" : "false",
+             oled_is_enabled() ? "true" : "false",
              channel_status.active_channel,
              channel_status.channel_auto ? "true" : "false",
              channel_status.manual_channel,
@@ -854,6 +879,62 @@ static esp_err_t set_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t mqtt_display_post_handler(httpd_req_t *req)
+{
+    if (!web_admin_authorized(req)) {
+        return ESP_OK;
+    }
+
+    char buf[256];
+    if (receive_request_body(req, buf, sizeof(buf)) != ESP_OK) {
+        return ESP_FAIL;
+    }
+
+    char broker_host[MQTT_BROKER_HOST_MAX_LEN + 1] = {0};
+    char root_topic[MQTT_ROOT_TOPIC_MAX_LEN + 1] = {0};
+    char display_raw[2] = {0};
+    if (!parse_form_field(buf, "broker_host", broker_host,
+                          sizeof(broker_host)) ||
+        !parse_form_field(buf, "root_topic", root_topic,
+                          sizeof(root_topic))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "Broker IPv4 and root topic are required");
+        return ESP_FAIL;
+    }
+    bool display_enabled =
+        parse_form_field(buf, "display_enabled", display_raw,
+                         sizeof(display_raw)) &&
+        strcmp(display_raw, "1") == 0;
+
+    bool previous_display_enabled = oled_is_enabled();
+    esp_err_t err = oled_set_enabled(display_enabled);
+    if (err == ESP_OK) {
+        err = mqtt_telemetry_set_config(broker_host, root_topic);
+    }
+    if (err != ESP_OK) {
+        if (oled_is_enabled() != previous_display_enabled) {
+            oled_set_enabled(previous_display_enabled);
+        }
+        ESP_LOGE(TAG, "Failed to apply MQTT/display configuration: %s",
+                 esp_err_to_name(err));
+        httpd_resp_send_err(
+            req, err == ESP_ERR_INVALID_ARG ? HTTPD_400_BAD_REQUEST
+                                            : HTTPD_500_INTERNAL_SERVER_ERROR,
+            err == ESP_ERR_INVALID_ARG
+                ? "Use a valid IPv4 address and a root containing only letters, digits, '.', '_' or '-'"
+                : "MQTT/display configuration was not saved");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "MQTT/display config changed: broker=%s:%d root=%s OLED=%s",
+             broker_host, MQTT_TELEMETRY_PORT, root_topic,
+             display_enabled ? "on" : "off");
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
 static esp_err_t oled_debug_post_handler(httpd_req_t *req)
 {
     if (!web_admin_authorized(req)) {
@@ -997,6 +1078,15 @@ esp_err_t web_server_start(void)
         .user_ctx = NULL
     };
     err = httpd_register_uri_handler(s_httpd, &set);
+    if (err != ESP_OK) goto register_failed;
+
+    httpd_uri_t mqtt_display = {
+        .uri      = "/mqtt/display",
+        .method   = HTTP_POST,
+        .handler  = mqtt_display_post_handler,
+        .user_ctx = NULL
+    };
+    err = httpd_register_uri_handler(s_httpd, &mqtt_display);
     if (err != ESP_OK) goto register_failed;
 
     httpd_uri_t oled_debug = {
