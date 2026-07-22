@@ -143,6 +143,46 @@ Run Freetz-ng configuration and build commands in this container. Merely
 editing or inspecting the host-mounted files is possible on the host, but the
 required build toolchain and libraries are supplied by the container.
 
+### Migrate an existing `.config`
+
+An existing Freetz-ng `.config` preserves the selected FRITZ!Box target and
+all explicit package values. After copying a newer overlay, opening and saving
+`make menuconfig` adds newly introduced symbols with their current defaults,
+but it deliberately retains old values for symbols that already exist.
+
+To preserve every existing value and only add missing settings, open
+`make menuconfig`, ensure **esp32c3 USB PPP and MQTT integration** is enabled,
+and save the configuration.
+
+To retain the rest of the image configuration but reset all ESP32-C3
+integration settings to the current overlay defaults, first make a backup and
+remove only the subordinate ESP32-C3 and derived Grafana values:
+
+```sh
+cp -p .config .config.before-esp32c3-defaults
+
+sed -i \
+  -e '/^FREETZ_PACKAGE_ESP32C3_/d' \
+  -e '/^# FREETZ_PACKAGE_ESP32C3_.* is not set$/d' \
+  -e '/^FREETZ_PACKAGE_MQTT_GRAFANA_\(TOPIC\|DB_PATH\|MAX_ROWS\|ALLOWED_IP\)=/d' \
+  .config
+
+make menuconfig
+```
+
+The exact main selection `FREETZ_PACKAGE_ESP32C3=y` does not contain the
+trailing underscore and is therefore preserved by these commands. If the old
+configuration did not select the integration package, enable it in the menu.
+Review its submenu and save; Kconfig then writes all removed settings using
+the current defaults. Do not use `make defconfig`, because that would replace
+the unrelated target and image selections as well.
+
+Confirm the resulting integration settings before building:
+
+```sh
+grep -E '^FREETZ_PACKAGE_ESP32C3(=|_)|^FREETZ_PACKAGE_MQTT_GRAFANA_' .config
+```
+
 Run the configuration interface from the root of the Freetz-ng source tree in
 the container:
 
@@ -379,6 +419,21 @@ contain `+` or `#`. Apply the edit and reload the page:
 nvi /mod/etc/conf/esp32c3.conf
 /etc/init.d/rc.esp32c3 restart
 ```
+
+Alternatively, to adopt every runtime default from a newly flashed image,
+stop the service, move the persistent configuration to an unused backup name,
+and start the service again:
+
+```sh
+/etc/init.d/rc.esp32c3 stop
+mv /mod/etc/conf/esp32c3.conf /mod/etc/conf/esp32c3.conf.before-new-defaults
+/etc/init.d/rc.esp32c3 start
+```
+
+On start, `rc.esp32c3` seeds a complete new
+`/mod/etc/conf/esp32c3.conf` from `/etc/default.esp32/esp32c3.conf`. Perform
+this only after the new firmware has booted, and keep the backup until any
+intentional local customizations have been copied into the new file.
 
 Do not remove the runtime file merely to perform a normal firmware update.
 Remove it only when intentionally resetting every integration setting to the
