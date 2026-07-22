@@ -103,14 +103,17 @@ use the SoftAP address (`http://192.168.4.1/ota`) instead.
 - SoftAP IP: `192.168.4.1`
 - SoftAP channel selection: automatic (channels `1`, `6`, or `11`; channel `11` is the initial fallback)
 - SoftAP max clients: `4`
-- MQTT broker IPv4: `192.168.178.1`
+- MQTT broker address: FRITZ!Box PPP peer/gateway (automatic)
 - MQTT broker port: `1883` (fixed standard port)
 - MQTT/Grafana root topic: `OBK-681`
 - OLED: enabled
 
 PPP IP is configured in the options.usb-esp32 file; the web UI shows the current
-PPP IP/GW/NM when connected. The MQTT broker IPv4, root topic, and OLED enabled
-state are saved in NVS and survive a restart and an OTA application update.
+PPP IP/GW/NM when connected. By default, the MQTT client uses the negotiated PPP
+peer/gateway address, so changing the FRITZ!Box LAN or PPP subnet does not
+require another ESP32 image. The optional broker IPv4 override, addressing
+mode, root topic, and OLED enabled state are saved in NVS and survive a restart
+and an OTA application update.
 
 Automatic channel selection starts the SoftAP immediately on its saved fallback
 channel. The first scan is deferred until the AP has remained unused for one
@@ -129,10 +132,12 @@ MQTT port `1883`. The default root is `OBK-681`, producing these subscriptions:
 - Power payload topic: `OBK-681/power/get`
 - Connection state topic: `OBK-681/connected`, with payload `online` or `offline`
 
-The broker IPv4 and root topic can be changed under **MQTT Display Source** in
-the web UI. `/power/get` and `/connected` are appended automatically. A root
-must contain only letters, digits, `.`, `_`, or `-`; it must not contain a
-slash or MQTT wildcards.
+Automatic mode uses the currently negotiated PPP peer address as the broker.
+It waits while PPP is down and follows a changed peer address after a reconnect.
+Automatic mode can be disabled and a manual broker IPv4 supplied under
+**MQTT Display Source** in the web UI. `/power/get` and `/connected` are
+appended automatically. A root must contain only letters, digits, `.`, `_`, or
+`-`; it must not contain a slash or MQTT wildcards.
 
 The OLED and web UI show the latest power value and connection state. A power
 reading is shown as unavailable if the broker disconnects or no update arrives

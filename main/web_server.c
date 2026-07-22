@@ -258,7 +258,8 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "if(!data){return;}"
         "setHtml('mqttStatus',data.mqtt.connected?'<span style=\"color:green;\">CONNECTED</span>':'<span style=\"color:red;\">UNREACHABLE</span>');"
         "setText('mqttPort',data.mqtt.port);"
-        "setText('mqttHost',data.mqtt.host||'');"
+        "setText('mqttMode',data.mqtt.auto?'PPP peer (automatic)':'Manual override');"
+        "setText('mqttHost',data.mqtt.host||'waiting for PPP peer');"
         "setText('mqttPowerTopic',data.mqtt.power_topic||'');"
         "setText('mqttConnectedTopic',data.mqtt.connected_topic||'');"
         "setText('freeHeap',data.mqtt.free_heap);"
@@ -329,8 +330,9 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<p><small>Use this control to test the display without pressing the GPIO9 BOOT button.</small></p><hr>"
         "<h3>MQTT Display Source</h3>"
         "<form method='POST' action='/mqtt/display'>"
-        "FRITZ!Box MQTT broker IPv4:<br><input name='broker_host' maxlength='15' value='%s' required><br>"
-        "<small>Port 1883 is used.</small><br>"
+        "<label><input type='checkbox' name='broker_auto' value='1'%s> Use PPP peer as FRITZ!Box broker (recommended)</label><br>"
+        "Manual broker IPv4 override:<br><input name='broker_host' maxlength='15' value='%s'><br>"
+        "<small>The override is used only when automatic mode is unchecked. Port 1883 is fixed.</small><br>"
         "Grafana root topic:<br><input name='root_topic' maxlength='63' value='%s' required><br>"
         "<small>For example OBK-681; /power/get and /connected are appended automatically.</small><br>"
         "<label><input type='checkbox' name='display_enabled' value='1'%s> OLED enabled</label><br><br>"
@@ -343,6 +345,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<div id='otaStatus' style='margin-top:8px;color:#444;'></div><hr>"
         "<h3>MQTT Telemetry</h3>"
         "<p><b>Broker status:</b> <span id='mqttStatus'></span><br>"
+        "<b>Address mode:</b> <span id='mqttMode'></span><br>"
         "<b>Broker:</b> <code id='mqttHost'></code>:<span id='mqttPort'></span><br>"
         "<b>Power topic:</b> <code id='mqttPowerTopic'></code><br>"
         "<b>Connection topic:</b> <code id='mqttConnectedTopic'></code><br>"
@@ -362,6 +365,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         escaped_ssid,
         channel_status.channel_auto ? " checked" : "",
         channel_status.manual_channel,
+        mqtt_config.broker_auto ? " checked" : "",
         escaped_mqtt_host,
         escaped_mqtt_root,
         oled_is_enabled() ? " checked" : "",
@@ -408,6 +412,9 @@ static esp_err_t status_all_get_handler(httpd_req_t *req)
 
     mqtt_telemetry_config_t mqtt_config;
     mqtt_telemetry_get_config(&mqtt_config);
+    char effective_broker_host[MQTT_BROKER_HOST_MAX_LEN + 1];
+    mqtt_telemetry_get_effective_broker_host(effective_broker_host,
+                                              sizeof(effective_broker_host));
     char mqtt_power_topic[MQTT_ROOT_TOPIC_MAX_LEN + 16];
     char mqtt_connected_topic[MQTT_ROOT_TOPIC_MAX_LEN + 16];
     snprintf(mqtt_power_topic, sizeof(mqtt_power_topic), "%s/power/get",
@@ -432,6 +439,8 @@ static esp_err_t status_all_get_handler(httpd_req_t *req)
              "\"schema_version\":3,"
              "\"mqtt\":{"
              "\"connected\":%s,"
+             "\"auto\":%s,"
+             "\"configured_host\":\"%s\","
              "\"host\":\"%s\","
              "\"port\":%d,"
              "\"root_topic\":\"%s\","
@@ -458,7 +467,9 @@ static esp_err_t status_all_get_handler(httpd_req_t *req)
              "},"
              "\"clients\":[",
              mqtt_telemetry_is_broker_connected() ? "true" : "false",
+             mqtt_config.broker_auto ? "true" : "false",
              mqtt_config.broker_host,
+             effective_broker_host,
              MQTT_TELEMETRY_PORT,
              mqtt_config.root_topic,
              mqtt_power_topic,
@@ -892,15 +903,20 @@ static esp_err_t mqtt_display_post_handler(httpd_req_t *req)
 
     char broker_host[MQTT_BROKER_HOST_MAX_LEN + 1] = {0};
     char root_topic[MQTT_ROOT_TOPIC_MAX_LEN + 1] = {0};
+    char broker_auto_raw[2] = {0};
     char display_raw[2] = {0};
     if (!parse_form_field(buf, "broker_host", broker_host,
                           sizeof(broker_host)) ||
         !parse_form_field(buf, "root_topic", root_topic,
                           sizeof(root_topic))) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "Broker IPv4 and root topic are required");
+                            "MQTT configuration fields are missing or invalid");
         return ESP_FAIL;
     }
+    bool broker_auto =
+        parse_form_field(buf, "broker_auto", broker_auto_raw,
+                         sizeof(broker_auto_raw)) &&
+        strcmp(broker_auto_raw, "1") == 0;
     bool display_enabled =
         parse_form_field(buf, "display_enabled", display_raw,
                          sizeof(display_raw)) &&
@@ -909,7 +925,7 @@ static esp_err_t mqtt_display_post_handler(httpd_req_t *req)
     bool previous_display_enabled = oled_is_enabled();
     esp_err_t err = oled_set_enabled(display_enabled);
     if (err == ESP_OK) {
-        err = mqtt_telemetry_set_config(broker_host, root_topic);
+        err = mqtt_telemetry_set_config(broker_auto, broker_host, root_topic);
     }
     if (err != ESP_OK) {
         if (oled_is_enabled() != previous_display_enabled) {
@@ -921,13 +937,14 @@ static esp_err_t mqtt_display_post_handler(httpd_req_t *req)
             req, err == ESP_ERR_INVALID_ARG ? HTTPD_400_BAD_REQUEST
                                             : HTTPD_500_INTERNAL_SERVER_ERROR,
             err == ESP_ERR_INVALID_ARG
-                ? "Use a valid IPv4 address and a root containing only letters, digits, '.', '_' or '-'"
+                ? "Select automatic PPP-peer mode or enter a valid IPv4 override; the root may contain only letters, digits, '.', '_' or '-'"
                 : "MQTT/display configuration was not saved");
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "MQTT/display config changed: broker=%s:%d root=%s OLED=%s",
-             broker_host, MQTT_TELEMETRY_PORT, root_topic,
+    ESP_LOGI(TAG, "MQTT/display config changed: broker=%s%s:%d root=%s OLED=%s",
+             broker_auto ? "PPP peer" : broker_host,
+             broker_auto ? " (automatic)" : "", MQTT_TELEMETRY_PORT, root_topic,
              display_enabled ? "on" : "off");
     httpd_resp_set_status(req, "303 See Other");
     httpd_resp_set_hdr(req, "Location", "/");

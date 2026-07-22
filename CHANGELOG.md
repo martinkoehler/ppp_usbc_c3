@@ -5,8 +5,10 @@
 - Removed the embedded Mosquitto broker and its managed dependencies; the
   ESP32 now uses only an MQTT client connected to the FRITZ!Box broker on port
   1883.
-- Added persistent web configuration for the broker IPv4 address and the
-  Grafana/root topic, defaulting to `192.168.178.1` and `OBK-681`.
+- Made the negotiated PPP peer/gateway the default broker address, allowing the
+  same image to work with different FRITZ!Box LAN and PPP subnets. Added a
+  persistent web-selectable manual IPv4 override and a root topic defaulting
+  to `OBK-681`.
 - Derived the power and presence subscriptions from the configured root as
   `<root>/power/get` and `<root>/connected`.
 - Updated the OLED connection marker to show `+` for `online`, `-` for

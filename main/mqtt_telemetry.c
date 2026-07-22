@@ -7,6 +7,7 @@
  */
 
 #include "mqtt_telemetry.h"
+#include "ppp.h"
 
 #include <ctype.h>
 #include <stdint.h>
@@ -26,6 +27,7 @@
 #include "nvs.h"
 
 #define MQTT_NVS_NAMESPACE "mqttcfg"
+#define MQTT_NVS_AUTO_KEY "auto"
 #define MQTT_NVS_BROKER_KEY "host"
 #define MQTT_NVS_ROOT_KEY "root"
 #define MQTT_TOPIC_MAX_LEN (MQTT_ROOT_TOPIC_MAX_LEN + 16)
@@ -36,7 +38,8 @@ static SemaphoreHandle_t s_mutex;
 static TaskHandle_t s_task;
 static esp_mqtt_client_handle_t s_client;
 static mqtt_telemetry_config_t s_config = {
-    .broker_host = MQTT_DEFAULT_BROKER_HOST,
+    .broker_auto = true,
+    .broker_host = "",
     .root_topic = MQTT_DEFAULT_ROOT_TOPIC,
 };
 static bool s_reconfigure_requested;
@@ -44,6 +47,7 @@ static bool s_broker_connected;
 static char s_power_topic[MQTT_TOPIC_MAX_LEN];
 static char s_connected_topic[MQTT_TOPIC_MAX_LEN];
 static char s_broker_uri[64];
+static char s_active_broker_host[MQTT_BROKER_HOST_MAX_LEN + 1];
 static char s_power[64] = "N/A";
 static int64_t s_power_updated_us;
 static int8_t s_obk_connected_state = -1;
@@ -91,29 +95,36 @@ static void load_config_from_nvs(void)
     nvs_handle_t nvs;
     if (nvs_open(MQTT_NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) return;
 
-    char host[sizeof(s_config.broker_host)] = MQTT_DEFAULT_BROKER_HOST;
+    uint8_t auto_mode = 1;
+    char host[sizeof(s_config.broker_host)] = "";
     char root[sizeof(s_config.root_topic)] = MQTT_DEFAULT_ROOT_TOPIC;
     size_t host_len = sizeof(host);
     size_t root_len = sizeof(root);
+    if (nvs_get_u8(nvs, MQTT_NVS_AUTO_KEY, &auto_mode) != ESP_OK) {
+        auto_mode = 1;
+    }
     if (nvs_get_str(nvs, MQTT_NVS_BROKER_KEY, host, &host_len) != ESP_OK ||
-        !valid_broker_host(host)) {
-        strlcpy(host, MQTT_DEFAULT_BROKER_HOST, sizeof(host));
+        (host[0] && !valid_broker_host(host))) {
+        host[0] = 0;
     }
     if (nvs_get_str(nvs, MQTT_NVS_ROOT_KEY, root, &root_len) != ESP_OK ||
         !valid_root_topic(root)) {
         strlcpy(root, MQTT_DEFAULT_ROOT_TOPIC, sizeof(root));
     }
     nvs_close(nvs);
+    s_config.broker_auto = auto_mode != 0 || !valid_broker_host(host);
     strlcpy(s_config.broker_host, host, sizeof(s_config.broker_host));
     strlcpy(s_config.root_topic, root, sizeof(s_config.root_topic));
 }
 
-static esp_err_t save_config_to_nvs(const char *host, const char *root)
+static esp_err_t save_config_to_nvs(bool auto_mode, const char *host,
+                                    const char *root)
 {
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(MQTT_NVS_NAMESPACE, NVS_READWRITE, &nvs);
     if (err != ESP_OK) return err;
-    err = nvs_set_str(nvs, MQTT_NVS_BROKER_KEY, host);
+    err = nvs_set_u8(nvs, MQTT_NVS_AUTO_KEY, auto_mode ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_str(nvs, MQTT_NVS_BROKER_KEY, host);
     if (err == ESP_OK) err = nvs_set_str(nvs, MQTT_NVS_ROOT_KEY, root);
     if (err == ESP_OK) err = nvs_commit(nvs);
     nvs_close(nvs);
@@ -208,15 +219,16 @@ static void destroy_client(void)
     esp_mqtt_client_stop(s_client);
     esp_mqtt_client_destroy(s_client);
     s_client = NULL;
+    s_active_broker_host[0] = 0;
     set_broker_connected(false);
 }
 
-static esp_err_t create_client(void)
+static esp_err_t create_client(const char *broker_host)
 {
     mqtt_telemetry_config_t config;
     mqtt_telemetry_get_config(&config);
     snprintf(s_broker_uri, sizeof(s_broker_uri), "mqtt://%s:%d",
-             config.broker_host, MQTT_TELEMETRY_PORT);
+             broker_host, MQTT_TELEMETRY_PORT);
     snprintf(s_power_topic, sizeof(s_power_topic), "%s/power/get",
              config.root_topic);
     snprintf(s_connected_topic, sizeof(s_connected_topic), "%s/connected",
@@ -235,6 +247,8 @@ static esp_err_t create_client(void)
         s_client = NULL;
         return err;
     }
+    strlcpy(s_active_broker_host, broker_host,
+            sizeof(s_active_broker_host));
     ESP_LOGI(TAG, "MQTT client started for %s", s_broker_uri);
     return ESP_OK;
 }
@@ -244,14 +258,21 @@ static void mqtt_task(void *arg)
     (void)arg;
     for (;;) {
         bool reconfigure = false;
+        char desired_host[MQTT_BROKER_HOST_MAX_LEN + 1];
         if (xSemaphoreTake(s_mutex, portMAX_DELAY) == pdTRUE) {
             reconfigure = s_reconfigure_requested;
             s_reconfigure_requested = false;
             xSemaphoreGive(s_mutex);
         }
         if (reconfigure) destroy_client();
-        if (!s_client) {
-            esp_err_t err = create_client();
+        bool broker_available = mqtt_telemetry_get_effective_broker_host(
+            desired_host, sizeof(desired_host));
+        if (s_client && (!broker_available ||
+                         strcmp(desired_host, s_active_broker_host) != 0)) {
+            destroy_client();
+        }
+        if (!s_client && broker_available) {
+            esp_err_t err = create_client(desired_host);
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "Unable to start MQTT client: %s",
                          esp_err_to_name(err));
@@ -297,15 +318,35 @@ void mqtt_telemetry_get_config(mqtt_telemetry_config_t *out)
     }
 }
 
-esp_err_t mqtt_telemetry_set_config(const char *broker_host,
+bool mqtt_telemetry_get_effective_broker_host(char *out, size_t out_len)
+{
+    if (!out || out_len == 0) return false;
+    out[0] = 0;
+    mqtt_telemetry_config_t config;
+    mqtt_telemetry_get_config(&config);
+    if (!config.broker_auto) {
+        strlcpy(out, config.broker_host, out_len);
+        return valid_broker_host(out);
+    }
+
+    ip4_addr_t gateway = {0};
+    ppp_get_ip_info(NULL, &gateway, NULL);
+    if (gateway.addr == 0) return false;
+    return ip4addr_ntoa_r(&gateway, out, (int)out_len) != NULL;
+}
+
+esp_err_t mqtt_telemetry_set_config(bool broker_auto, const char *broker_host,
                                     const char *root_topic)
 {
-    if (!valid_broker_host(broker_host) || !valid_root_topic(root_topic)) {
+    if (!broker_host || (!broker_auto && !valid_broker_host(broker_host)) ||
+        (broker_host[0] && !valid_broker_host(broker_host)) ||
+        !valid_root_topic(root_topic)) {
         return ESP_ERR_INVALID_ARG;
     }
-    esp_err_t err = save_config_to_nvs(broker_host, root_topic);
+    esp_err_t err = save_config_to_nvs(broker_auto, broker_host, root_topic);
     if (err != ESP_OK) return err;
     if (xSemaphoreTake(s_mutex, portMAX_DELAY) != pdTRUE) return ESP_ERR_TIMEOUT;
+    s_config.broker_auto = broker_auto;
     strlcpy(s_config.broker_host, broker_host, sizeof(s_config.broker_host));
     strlcpy(s_config.root_topic, root_topic, sizeof(s_config.root_topic));
     strlcpy(s_power, "N/A", sizeof(s_power));
