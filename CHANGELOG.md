@@ -13,6 +13,9 @@
   collector startup wait asynchronously for configured `/var/media/ftp`
   volumes, preventing databases from being created on internal flash before
   USB automount completes.
+- Made PPP startup wait asynchronously for the configured serial character
+  device, avoiding the boot race where pppd exited before USB enumeration
+  created `/dev/ttyACM0`.
 
 ## 2026-07-18 — Freetz-ng clean-build correction
 

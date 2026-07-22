@@ -15,8 +15,10 @@ CONFIG=/mod/etc/conf/esp32c3.cfg
 LEGACY_CONFIG=/mod/etc/conf/esp32c3.conf
 PPP_OPTIONS=/var/run/esp32c3.ppp.options
 PPP_PIDFILE=/var/run/ppp-esp.pid
+PPP_WAITER_PIDFILE=/var/run/ppp-esp-wait.pid
 COLLECTOR_PIDFILE=/var/run/mqtt_to_sqlite.pid
 COLLECTOR_WAITER_PIDFILE=/var/run/mqtt_to_sqlite-wait.pid
+SERIAL_POLL_SECONDS=2
 STORAGE_POLL_SECONDS=2
 
 pid_running() {
@@ -103,17 +105,43 @@ EOF
   chmod 600 "$PPP_OPTIONS"
 }
 
-start_ppp() {
+start_ppp_process() {
   pid_running "$PPP_PIDFILE" && return 0
   rm -f "$PPP_PIDFILE"
-  prepare_devices || return 1
-  write_ppp_options || return 1
   echo "Starting ESP32-C3 PPP on $SERIAL_DEVICE"
   "$PPPD" file "$PPP_OPTIONS" &
   echo $! > "$PPP_PIDFILE"
 }
 
+wait_for_serial_and_start_ppp() {
+  while [ ! -c "$SERIAL_DEVICE" ]; do
+    sleep "$SERIAL_POLL_SECONDS"
+  done
+  start_ppp_process
+  rm -f "$PPP_WAITER_PIDFILE"
+}
+
+start_ppp() {
+  pid_running "$PPP_PIDFILE" && return 0
+  pid_running "$PPP_WAITER_PIDFILE" && return 0
+  rm -f "$PPP_PIDFILE" "$PPP_WAITER_PIDFILE"
+  prepare_devices || return 1
+  write_ppp_options || return 1
+
+  if [ -c "$SERIAL_DEVICE" ]; then
+    start_ppp_process
+  else
+    echo "Waiting for ESP32-C3 serial device $SERIAL_DEVICE"
+    wait_for_serial_and_start_ppp &
+    echo $! > "$PPP_WAITER_PIDFILE"
+  fi
+}
+
 stop_ppp() {
+  if pid_running "$PPP_WAITER_PIDFILE"; then
+    kill "$(cat "$PPP_WAITER_PIDFILE")" 2>/dev/null
+  fi
+  rm -f "$PPP_WAITER_PIDFILE"
   if pid_running "$PPP_PIDFILE"; then
     kill "$(cat "$PPP_PIDFILE")" 2>/dev/null
   fi

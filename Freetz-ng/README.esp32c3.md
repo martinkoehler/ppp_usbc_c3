@@ -404,14 +404,16 @@ startup, `rc.mod` invokes `/etc/init.d/rc.esp32c3`, which:
    populate it automatically; and
 5. starts `mqtt_to_sqlite` independently of PPP, waiting in the background
    for a configured USB volume when necessary; and
-6. starts pppd immediately with persistent reconnect options.
+6. starts pppd with persistent reconnect options, using a non-blocking
+   one-shot waiter when the configured serial device has not appeared yet.
 
 When PPP comes up, `ip-up` installs the route to the ESP32 SoftAP subnet.
 `ip-down` deliberately leaves the collector running because OpenBeken may
 still publish through FRITZ!Box WLAN. `mqtt_to_sqlite` has its own MQTT
 reconnect loop, while pppd's `persist`, `maxfail 0`, and `holdoff` options
-handle PPP reconnects. The storage waiter exits after starting the collector;
-there is no additional process-failure or PPP polling supervisor.
+handle PPP reconnects. The storage and initial serial-device waiters exit
+after starting their respective processes; there is no additional
+process-failure or PPP polling supervisor.
 
 All values exposed by the `esp32c3` menuconfig submenu are first-boot defaults,
 not immutable firmware settings. Edit the persistent file on the router and
@@ -543,7 +545,9 @@ Do not expose it directly to the Internet.
 
 - **No `/dev/ttyACM0`:** check USB host mode, cable/data wiring, kernel logs,
   and whether `cdc_acm` loaded. Device numbering may change if other ACM
-  devices are attached.
+  devices are attached. During initial USB enumeration,
+  `/var/run/ppp-esp-wait.pid` identifies the one-shot waiter that will start
+  pppd when the configured character device appears.
 - **pppd reports that `/dev/ppp` is missing:** verify that `ppp_generic` and
   `ppp_async` loaded. Package version 1.0.2 creates `/dev/ppp` as character
   device `108:0` before starting pppd.
