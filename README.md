@@ -1,8 +1,9 @@
 # ppp_usbc_c3
-ESP32C3 as AP with PPP connection via USB-C and local mqtt_broker
+ESP32-C3 as a Wi-Fi AP with a PPP connection via USB-C and an OLED MQTT display.
 
-The ESP32-C3 opens a WLAN Access point where clients can connect to and access the local MQTT Broker.
-It also exposes a simple status/config web UI and shows MQTT power telemetry on a small OLED.
+The ESP32-C3 opens a WLAN access point, routes it over PPP, exposes a status and
+configuration web UI, and shows power telemetry from the FRITZ!Box MQTT broker
+on a small OLED. It does not run an MQTT broker itself.
 
 ## Freetz-ng integration
 
@@ -47,7 +48,8 @@ The Webserver shows the IP of connected client. Due to the `route add` command, 
 
 ## Web UI & OTA Update
 
-The device runs a web UI for status, SSID/password config, and OTA updates.
+The device runs a web UI for status, SSID/password configuration, MQTT display
+configuration, OLED control, and OTA updates.
 It uses HTTP Basic authentication with username `admin` and the current
 SoftAP password. For an intentionally open SoftAP, the password is empty;
 administrative access is therefore not secure and should only be used on a
@@ -101,9 +103,17 @@ use the SoftAP address (`http://192.168.4.1/ota`) instead.
 - SoftAP IP: `192.168.4.1`
 - SoftAP channel selection: automatic (channels `1`, `6`, or `11`; channel `11` is the initial fallback)
 - SoftAP max clients: `4`
-- MQTT broker port: `1883`
+- MQTT broker address: FRITZ!Box PPP peer/gateway (automatic)
+- MQTT broker port: `1883` (fixed standard port)
+- MQTT/Grafana root topic: `OBK-681`
+- OLED: enabled
 
-PPP IP is configured in the options.usb-esp32 file; the web UI shows the current PPP IP/GW/NM when connected.
+PPP IP is configured in the options.usb-esp32 file; the web UI shows the current
+PPP IP/GW/NM when connected. By default, the MQTT client uses the negotiated PPP
+peer/gateway address, so changing the FRITZ!Box LAN or PPP subnet does not
+require another ESP32 image. The optional broker IPv4 override, addressing
+mode, root topic, and OLED enabled state are saved in NVS and survive a restart
+and an OTA application update.
 
 Automatic channel selection starts the SoftAP immediately on its saved fallback
 channel. The first scan is deferred until the AP has remained unused for one
@@ -116,18 +126,23 @@ channels 1 through 11.
 
 ## MQTT Topics (OBK)
 
-The built-in broker listens on port `1883` and exposes OBK telemetry:
+The ESP32 connects as a client to the configured FRITZ!Box broker on standard
+MQTT port `1883`. The default root is `OBK-681`, producing these subscriptions:
 
-- Power payload topic: `obk_wr/power/get`
-- Connection state topic: `obk_wr/connected` with payload `online` or `offline`
+- Power payload topic: `OBK-681/power/get`
+- Connection state topic: `OBK-681/connected`, with payload `online` or `offline`
 
-The OLED and web UI show the latest power value. The web UI shows OBK
-connection state in the MQTT status panel (auto-refreshed via AJAX). On the
-OLED, OBK offline state is shown as `-` in place of the RSSI bar; online state
-does not add a separate marker.
+Automatic mode uses the currently negotiated PPP peer address as the broker.
+It waits while PPP is down and follows a changed peer address after a reconnect.
+Automatic mode can be disabled and a manual broker IPv4 supplied under
+**MQTT Display Source** in the web UI. `/power/get` and `/connected` are
+appended automatically. A root must contain only letters, digits, `.`, `_`, or
+`-`; it must not contain a slash or MQTT wildcards.
 
-An internal subscriber (ESP-MQTT component) listens to these topics locally to
-ensure LWT updates are reflected without patching the broker.
+The OLED and web UI show the latest power value and connection state. A power
+reading is shown as unavailable if the broker disconnects or no update arrives
+for 30 seconds. ESP-MQTT reconnects automatically when the broker becomes
+reachable again.
 
 ## OLED Display
 
@@ -140,7 +155,15 @@ The OLED display shows real-time power telemetry with WiFi signal strength indic
   - The bar spans about `-100 dBm` to `-45 dBm`
   - It has 56 fill steps, effectively one display pixel per dBm
   - The RSSI value is refreshed every 5 seconds
-- **Connection Marker:** When OBK reports offline, `-` is shown in place of the RSSI bar. Online state does not show `+`.
+- **Connection Marker:** `+` means the configured device reports `online`, `-`
+  means `offline`, and `X` means the FRITZ!Box MQTT broker cannot be reached.
+  The marker is shown in place of the RSSI bar.
+
+The **OLED enabled** checkbox under **MQTT Display Source** turns the OLED panel
+off using its power-save mode. This setting is persistent. It does not cut
+power to the ESP32 board or its hardwired power indicator LED; turning that LED
+off requires a board modification. The separately controllable WS2812 RGB LED
+on a Wemos C3 Mini is not used by this firmware.
 
 ### Screensaver
 After ~60 seconds of idle (power ≤ 0), the display dims and shows a bouncing client count.
@@ -151,7 +174,8 @@ debug screen. The debug screen shows:
 - Web server status (R=Running, S=Stopped)
 - HTTP health status (last HTTP response code)
 - OTA progress (if upload in progress)
-- MQTT and AP state. `AP:R` means all local SoftAP checks pass. Other AP codes
+- MQTT-client and AP state. `M:R` means connected to the configured broker and
+  `M:S` means disconnected. `AP:R` means all local SoftAP checks pass. Other AP codes
   identify the failed check: `E` = no AP start event, `M` = WiFi mode, `N` =
   network interface down, `I` = IP unavailable, `C` = configuration mismatch,
   and `L` = SoftAP control block unavailable.
@@ -215,6 +239,10 @@ If you change the partition table, keep these entries (or adjust OTA logic accor
 - No access to `192.168.4.x` clients from the host: confirm the `ip route add 192.168.4.0/24 ...` step.
 - PPP interface name differs from `ppp0`: check `ip a` and update the route command to match.
 - WiFi RSSI bar not updating: ensure the OLED is displaying and clients are actively connected.
+- MQTT display shows `X`: verify the configured broker IPv4, that port `1883`
+  is reachable from the ESP32, and that the FRITZ!Box broker is running.
+- MQTT display remains `N/A`: verify that the configured root publishes a
+  retained or current `<root>/power/get` value.
 
 ## Routing
 

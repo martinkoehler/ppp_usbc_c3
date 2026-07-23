@@ -17,6 +17,23 @@
   device, avoiding the boot race where pppd exited before USB enumeration
   created `/dev/ttyACM0`.
 
+## 2026-07-22 — FRITZ!Box MQTT display source
+
+- Removed the embedded Mosquitto broker and its managed dependencies; the
+  ESP32 now uses only an MQTT client connected to the FRITZ!Box broker on port
+  1883.
+- Made the negotiated PPP peer/gateway the default broker address, allowing the
+  same image to work with different FRITZ!Box LAN and PPP subnets. Added a
+  persistent web-selectable manual IPv4 override and a root topic defaulting
+  to `OBK-681`.
+- Derived the power and presence subscriptions from the configured root as
+  `<root>/power/get` and `<root>/connected`.
+- Updated the OLED connection marker to show `+` for `online`, `-` for
+  `offline`, and `X` when the broker is unreachable. Stale power data now
+  becomes unavailable after 30 seconds.
+- Added a persistent web switch for OLED power-save mode and exposed the new
+  MQTT/display state in the status endpoint.
+
 ## 2026-07-18 — Freetz-ng clean-build correction
 
 - Corrected the `mqtt-grafana` recipe to use SQLite headers from the target

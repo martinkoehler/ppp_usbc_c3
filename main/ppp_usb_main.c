@@ -7,7 +7,7 @@
  *  - NVS storage for AP creds
  *  - WiFi SoftAP setup + static IP config
  *  - Exposed AP interface for web server
- *  - Starts modules (PPP, web server, broker, OLED)
+ *  - Starts modules (PPP, web server, MQTT telemetry, OLED)
  *
  * Author: Martin Köhler [martinkoehler]
  *
@@ -36,7 +36,7 @@
 #include "ap_config.h"
 #include "ppp.h"
 #include "web_server.h"
-#include "mqtt_broker.h"
+#include "mqtt_telemetry.h"
 #include "oled.h"
 #include "watchdog.h"
 #include "client_rssi.h"
@@ -780,7 +780,7 @@ void app_main(void)
     /* Start modules */
     ESP_ERROR_CHECK(client_rssi_init()); // Initialize client RSSI tracking first
     ESP_ERROR_CHECK(web_server_start());
-    ESP_ERROR_CHECK(mqtt_broker_start());
+    ESP_ERROR_CHECK(mqtt_telemetry_start());
     ESP_ERROR_CHECK(oled_start());
     ESP_ERROR_CHECK(ppp_usb_start());
     ESP_ERROR_CHECK(watchdog_start(30, 5000)); // Feed every 5s with a 30s timeout

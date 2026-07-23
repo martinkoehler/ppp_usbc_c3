@@ -10,7 +10,7 @@
  */
 #include "oled.h"
 #include "ap_config.h"
-#include "mqtt_broker.h"
+#include "mqtt_telemetry.h"
 #include "web_server.h"
 #include "client_rssi.h"
 
@@ -24,6 +24,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
+#include "nvs.h"
 
 #include "u8g2.h"
 #include "u8g2_esp32_hal.h"
@@ -43,6 +44,8 @@
 #define CONTENT_Y_OFFSET 18
 #define CREDENTIAL_LINE_CHARS 25
 #define CREDENTIAL_LINE_COUNT 5
+#define OLED_NVS_NAMESPACE "display"
+#define OLED_NVS_ENABLED_KEY "enabled"
 
 static const uint8_t I2C_ADDR_8BIT = (0x3C << 1);
 
@@ -64,6 +67,23 @@ static esp_err_t last_web_err = ESP_OK;
 static bool debug_mode = false;
 static bool debug_toggle_requested = false;
 static portMUX_TYPE debug_toggle_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool display_enabled = true;
+static portMUX_TYPE display_enabled_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static void load_display_setting(void)
+{
+    nvs_handle_t nvs;
+    uint8_t enabled = 1;
+    if (nvs_open(OLED_NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
+        if (nvs_get_u8(nvs, OLED_NVS_ENABLED_KEY, &enabled) != ESP_OK) {
+            enabled = 1;
+        }
+        nvs_close(nvs);
+    }
+    portENTER_CRITICAL(&display_enabled_lock);
+    display_enabled = enabled != 0;
+    portEXIT_CRITICAL(&display_enabled_lock);
+}
 
 static int get_connected_client_count(void)
 {
@@ -76,7 +96,8 @@ static int get_connected_client_count(void)
 
 static char get_obk_connected_marker(void)
 {
-    int state = mqtt_broker_get_obk_connected_state();
+    int state = mqtt_telemetry_get_obk_connected_state();
+    if (state == -2) return 'X';
     if (state > 0) return '+';
     if (state == 0) return '-';
     return 0;
@@ -313,7 +334,7 @@ static void draw_debug_page(void)
     snprintf(line3, sizeof(line3), "AP:%c C:%d M:%c",
              ap_get_health_code(),
              get_connected_client_count(),
-             mqtt_broker_is_running() ? 'R' : 'S');
+             mqtt_telemetry_is_broker_connected() ? 'R' : 'S');
 
     u8g2_ClearBuffer(&u8g2);
     u8g2_SetFont(&u8g2, u8g2_font_6x10_tr);
@@ -386,7 +407,7 @@ static void draw_credentials_page(void)
 static void handle_oled(void)
 {
     char power_copy[30];
-    mqtt_broker_get_obk_power(power_copy, sizeof(power_copy));
+    mqtt_telemetry_get_power(power_copy, sizeof(power_copy));
     float p = parse_power(power_copy);
 
     if (!web_server_is_auth_enabled()) {
@@ -468,10 +489,11 @@ static void handle_oled(void)
     snprintf(count_str, sizeof(count_str), "%d", client_count);
     u8g2_DrawStr(&u8g2, xoff + 0, yoff + 44, count_str);
     
-    /* Draw OBK offline marker, otherwise show WiFi signal indicator. */
+    /* MQTT/OBK state: X=broker unavailable, +=online, -=offline. */
     char marker = get_obk_connected_marker();
-    if (marker == '-') {
-        u8g2_DrawStr(&u8g2, xoff + 12, yoff + 44, "-");
+    if (marker) {
+        char marker_str[2] = {marker, 0};
+        u8g2_DrawStr(&u8g2, xoff + 12, yoff + 44, marker_str);
     } else if (client_count > 0) {
         draw_signal_bar(&u8g2, xoff + 12, yoff + 38, client_rssi);
     }
@@ -486,11 +508,30 @@ static void oled_task(void *arg)
 {
     (void)arg;
     int tick = 0;
+    bool display_was_enabled = oled_is_enabled();
     while (1) {
         poll_debug_button();
         process_requested_debug_toggle();
-        update_cached_web_health();
-        if ((tick % 20) == 0) {
+        bool enabled = oled_is_enabled();
+        if (!enabled) {
+            if (display_was_enabled) {
+                u8g2_ClearBuffer(&u8g2);
+                u8g2_SendBuffer(&u8g2);
+                u8g2_SetPowerSave(&u8g2, 1);
+                display_was_enabled = false;
+            }
+        } else {
+            if (!display_was_enabled) {
+                screensaver = false;
+                idle_seconds = 0;
+                blank_seconds = 0;
+                u8g2_SetPowerSave(&u8g2, 0);
+                u8g2_SetContrast(&u8g2, CONTRAST);
+                display_was_enabled = true;
+            }
+            update_cached_web_health();
+        }
+        if (enabled && (tick % 20) == 0) {
             handle_oled();
         }
         tick = (tick + 1) % 1000;
@@ -500,6 +541,7 @@ static void oled_task(void *arg)
 
 esp_err_t oled_start(void)
 {
+    load_display_setting();
     oled_button_init();
     u8g2_esp32_hal_t hal = U8G2_ESP32_HAL_DEFAULT;
     hal.bus.i2c.sda = OLED_SDA;
@@ -518,8 +560,8 @@ esp_err_t oled_start(void)
 
     u8g2_SetI2CAddress(&u8g2, I2C_ADDR_8BIT);
     u8g2_InitDisplay(&u8g2);
-    u8g2_SetPowerSave(&u8g2, 0);
-    u8g2_SetContrast(&u8g2, CONTRAST);
+    u8g2_SetPowerSave(&u8g2, oled_is_enabled() ? 0 : 1);
+    if (oled_is_enabled()) u8g2_SetContrast(&u8g2, CONTRAST);
 
     ESP_LOGI(TAG, "OLED init OK. Display %dx%d, content offset (%d,%d)",
              OLED_WIDTH, OLED_HEIGHT, CONTENT_X_OFFSET, CONTENT_Y_OFFSET);
@@ -544,4 +586,29 @@ void oled_request_debug_toggle(void)
     portENTER_CRITICAL(&debug_toggle_lock);
     debug_toggle_requested = true;
     portEXIT_CRITICAL(&debug_toggle_lock);
+}
+
+bool oled_is_enabled(void)
+{
+    bool enabled;
+    portENTER_CRITICAL(&display_enabled_lock);
+    enabled = display_enabled;
+    portEXIT_CRITICAL(&display_enabled_lock);
+    return enabled;
+}
+
+esp_err_t oled_set_enabled(bool enabled)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(OLED_NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u8(nvs, OLED_NVS_ENABLED_KEY, enabled ? 1 : 0);
+    if (err == ESP_OK) err = nvs_commit(nvs);
+    nvs_close(nvs);
+    if (err != ESP_OK) return err;
+
+    portENTER_CRITICAL(&display_enabled_lock);
+    display_enabled = enabled;
+    portEXIT_CRITICAL(&display_enabled_lock);
+    return ESP_OK;
 }
